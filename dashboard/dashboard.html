@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BOSS Sniffer 看板 v2</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="board-header">
+    <h1>BOSS Sniffer 看板 <span class="version" id="version-tag">v?.?.?</span></h1>
+    <div id="board-controls" class="board-controls">
+      <div class="ctrl-group">
+        <span class="ctrl-label">时间</span>
+        <button class="time-btn active" data-time="day">日</button>
+        <button class="time-btn" data-time="week">周</button>
+        <button class="time-btn" data-time="month">月</button>
+      </div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">JD</span>
+        <select id="jd-filter">
+          <option value="">全部</option>
+        </select>
+      </div>
+      <button id="btn-refresh" class="btn-refresh">↻ 刷新</button>
+    </div>
+  </header>
+
+  <main class="board-main">
+    <!-- 4.B 漏斗卡（顶部，内嵌 推荐页/沟通页 tab） -->
+    <section class="board-card" id="view-funnel-card">
+      <h2 id="funnel-title">📊 日数据</h2>
+      <div class="funnel-tabs" id="funnel-tabs">
+        <button class="funnel-tab active" data-scenario="recommend">推荐页</button>
+        <button class="funnel-tab" data-scenario="chat">沟通页</button>
+      </div>
+      <div id="view-funnel-content">
+        <p class="loading">加载中...</p>
+      </div>
+    </section>
+
+    <!-- 4.C JD 分析卡（M_i pass 主因 + O_i 命中率，按时间窗切片） -->
+    <section class="board-card" id="view-jd-card">
+      <h2>🩺 JD 分析</h2>
+      <div id="view-jd-content">
+        <p class="loading">加载中...</p>
+      </div>
+    </section>
+
+    <!-- 4.D 趋势卡（粒度跟时间窗对应：日 → 7 天 / 周 → 8 周 / 月 → 6 月） -->
+    <section class="board-card" id="view-trend-card">
+      <h2 id="trend-title">📈 7 天趋势</h2>
+      <div id="view-trend-content">
+        <p class="loading">加载中...</p>
+      </div>
+    </section>
+
+    <!-- 4.E 候选人记录（默认展示，最底部，超出 28 条加待续提示） -->
+    <section class="board-card drawer-card" id="view-drawer-card">
+      <h2>
+        👥 候选人记录
+        <span class="drawer-meta" id="drawer-meta"></span>
+      </h2>
+      <!-- v0.20.5：HR 手动切换显示全部 / 仅符合 -->
+      <div class="drawer-filter-tabs" id="drawer-filter-tabs">
+        <button class="drawer-filter-tab active" data-filter="all">显示全部</button>
+        <button class="drawer-filter-tab" data-filter="match">仅符合</button>
+      </div>
+      <div id="view-drawer-content">
+        <p class="loading">加载中...</p>
+      </div>
+    </section>
+
+    <!-- ⚙ 诊断抽屉（默认折叠，开发用） -->
+    <details class="diag-drawer" id="diag-drawer">
+      <summary>⚙ 诊断（点击展开 — 开发用）</summary>
+      <div id="dashboard-debug" class="dashboard-debug">数据源：等待刷新...</div>
+    </details>
+  </main>
+
+  <!-- v0.17.0 storage 重构：jd-templates 依赖 BossStorageSync，必须先加载 -->
+  <script src="../lib/storage-sync.js"></script>
+  <script src="../lib/jd-templates.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>
+</content>
+</invoke>

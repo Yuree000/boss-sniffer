@@ -1,0 +1,585 @@
+/* === 全局 === */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #f6f7f9;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  color: #1f2328;
+  line-height: 1.5;
+}
+
+/* === Header === */
+.board-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 32px;
+  background: #fff;
+  border-bottom: 1px solid #e1e4e8;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.03);
+}
+.board-header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.board-header .version {
+  font-size: 12px;
+  color: #888;
+  background: #f0f0f0;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  font-weight: 400;
+}
+
+.dashboard-debug {
+  color: #6b7177;
+  font-size: 12px;
+  padding: 8px 4px;
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+.dashboard-debug.error {
+  color: #c33;
+}
+
+/* v0.20.0：诊断折叠抽屉（默认收起，开发用） */
+.diag-drawer {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #6b7177;
+}
+.diag-drawer summary {
+  cursor: pointer;
+  padding: 6px 12px;
+  user-select: none;
+  color: #888;
+}
+.diag-drawer summary:hover { color: #555; }
+.diag-drawer[open] summary {
+  border-bottom: 1px solid #eee;
+  margin-bottom: 6px;
+}
+
+/* === Main === */
+.board-main {
+  max-width: 1200px;
+  margin: 24px auto;
+  padding: 0 32px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.board-card {
+  background: #fff;
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+  padding: 20px 24px;
+}
+.board-card h2 {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.loading {
+  color: #888;
+  font-size: 13px;
+  margin: 0;
+  padding: 12px;
+  text-align: center;
+}
+.error {
+  color: #c33;
+  background: #fff5f5;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 13px;
+}
+
+/* === 视图一 北极星 === */
+.nsm-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.nsm-card {
+  flex: 1;
+  background: #f0f7ff;
+  border: 1px solid #d0e0f0;
+  border-radius: 6px;
+  padding: 16px;
+  text-align: center;
+}
+.nsm-label {
+  font-size: 12px;
+  color: #555;
+  margin-bottom: 4px;
+}
+.nsm-value {
+  font-size: 28px;
+  font-weight: 600;
+  color: #2467f0;
+  line-height: 1.2;
+}
+.nsm-hint {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+
+/* === 视图一 漏斗 === */
+.funnel {
+  margin-top: 16px;
+}
+.funnel-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.funnel-row.dim { opacity: 0.45; }
+.funnel-label {
+  width: 96px;
+  font-size: 13px;
+  color: #444;
+  flex-shrink: 0;
+}
+.funnel-bar {
+  flex: 1;
+  height: 22px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.funnel-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2467f0, #6e9eff);
+  transition: width 0.3s;
+}
+.funnel-row.dim .funnel-fill { background: #d0d0d0; }
+.funnel-num {
+  width: 60px;
+  text-align: right;
+  font-weight: 600;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.funnel-rate {
+  margin-left: 108px;  /* 对齐 label 后面 */
+  font-size: 11px;
+  color: #6b7177;
+  margin-bottom: 6px;
+}
+.funnel-rate.dim {
+  color: #aaa;
+}
+.funnel-summary {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+  font-size: 13px;
+  color: #555;
+  text-align: center;
+}
+
+/* === 视图三 Pass 主因柱状图 === */
+.reason-total {
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 4px;
+}
+.reason-note {
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
+  margin-bottom: 12px;
+}
+.reason-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.reason-label {
+  width: 240px;
+  font-size: 13px;
+  color: #444;
+  flex-shrink: 0;
+  word-break: break-word;
+  line-height: 1.4;
+}
+.reason-bar {
+  flex: 1;
+  height: 18px;
+  background: #f6f7f9;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.reason-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #c33, #f5a623);
+  transition: width 0.3s;
+}
+/* v0.19.0：符合侧视图（视图四）柱状图用绿色渐变，区别于 pass 红橙 */
+.reason-fill.match-fill {
+  background: linear-gradient(90deg, #2a8, #5cd09e);
+}
+/* v0.20.1：M_i 信息缺占比用单色橙（pass 主因仍用默认红橙渐变） */
+.reason-fill.miss-fill {
+  background: #f5a623;
+}
+.reason-num {
+  width: 48px;
+  text-align: right;
+  font-weight: 600;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.reason-pct {
+  width: 56px;
+  font-size: 12px;
+  color: #888;
+  flex-shrink: 0;
+}
+.empty-hint {
+  text-align: center;
+  color: #888;
+  font-size: 13px;
+  padding: 20px;
+}
+
+/* === 顶部控件 === */
+.board-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.ctrl-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ctrl-label {
+  font-size: 12px;
+  color: #888;
+  margin-right: 4px;
+}
+/* v0.20.3：时间窗按钮（日/周/月）切片所有下方视图 */
+.time-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #444;
+}
+.time-btn:hover { background: #f3f4f6; }
+.time-btn.active {
+  background: #2467f0;
+  color: #fff;
+  border-color: #2467f0;
+}
+#jd-filter {
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 3px;
+  background: #fff;
+}
+.btn-refresh {
+  padding: 4px 12px;
+  font-size: 12px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #444;
+}
+.btn-refresh:hover { background: #f3f4f6; }
+
+/* === v0.20.0：board-card h2 内的右侧小提示 === */
+.board-card h2 .card-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: #888;
+  margin-left: 8px;
+}
+
+/* === v0.20.3：4.B 漏斗卡（单卡 + 内嵌 推荐页/沟通页 tab） === */
+.funnel-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #e1e4e8;
+}
+.funnel-tab {
+  padding: 6px 16px;
+  font-size: 13px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  color: #666;
+  transition: color 0.15s, border-color 0.15s;
+}
+.funnel-tab:hover { color: #2467f0; }
+.funnel-tab.active {
+  color: #2467f0;
+  border-bottom-color: #2467f0;
+  font-weight: 500;
+}
+.funnel-num {
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.funnel-num:hover {
+  color: #2467f0;
+  text-decoration: underline;
+}
+.funnel-placeholder {
+  text-align: center;
+  color: #888;
+  font-size: 13px;
+  padding: 40px 12px;
+  line-height: 1.8;
+}
+.funnel-placeholder .placeholder-hint {
+  font-size: 11px;
+  color: #aaa;
+  margin-top: 6px;
+}
+
+/* === v0.20.0：4.C JD 分析（沿用 .reason-* + 加诊断结论行） === */
+/* v0.20.2：JD 分析卡每条 condition 下方的「去 admin 改」按钮独立一行右对齐 */
+.jd-action-row {
+  text-align: right;
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+.btn-admin-jump {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #444;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn-admin-jump:hover {
+  background: #eef4ff;
+  border-color: #b0c8f0;
+  color: #2467f0;
+}
+
+/* v0.20.1：JD 分析卡上下两段（M_i / O_i）的样式 */
+.jd-section-title {
+  font-size: 12px;
+  color: #555;
+  font-weight: 500;
+  margin: 14px 0 10px;
+  padding-left: 2px;
+}
+.jd-condition-block {
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+}
+.jd-condition-block:last-child {
+  margin-bottom: 0;
+}
+.reason-row.sub-row {
+  margin-top: 2px;
+  opacity: 0.75;
+}
+.reason-label.sub-label {
+  font-size: 11px;
+  color: #888;
+  padding-left: 24px;
+}
+.jd-section-divider {
+  border-top: 1px dashed #e1e4e8;
+  margin: 16px 0 8px;
+}
+
+/* === v0.20.0：4.D 7 天趋势 === */
+.trend-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.trend-row:last-child { margin-bottom: 0; }
+.trend-label {
+  width: 180px;
+  font-size: 12px;
+  color: #555;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.trend-svg {
+  flex: 1;
+  height: 36px;
+  display: block;
+}
+.trend-current {
+  width: 80px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2467f0;
+  flex-shrink: 0;
+}
+.trend-x-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-left: 192px;
+  margin-right: 92px;
+  font-size: 10px;
+  color: #aaa;
+  margin-top: 4px;
+}
+
+/* === v0.20.0：4.E 候选人下钻抽屉 === */
+.drawer-card h2 {
+  display: flex;
+  align-items: center;
+}
+.drawer-meta {
+  font-size: 12px;
+  font-weight: 400;
+  color: #888;
+  margin-left: 12px;
+  flex: 1;
+}
+.drawer-close {
+  background: transparent;
+  border: 0;
+  font-size: 20px;
+  cursor: pointer;
+  color: #888;
+  padding: 0 8px;
+  line-height: 1;
+}
+.drawer-close:hover { color: #c33; }
+.drawer-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.drawer-table th {
+  text-align: left;
+  font-weight: 500;
+  color: #888;
+  padding: 6px 8px;
+  border-bottom: 1px solid #e1e4e8;
+}
+.drawer-table td {
+  padding: 8px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: top;
+}
+.drawer-table tr:hover td {
+  background: #f6f8fa;
+}
+.drawer-table .col-time {
+  width: 80px;
+  color: #888;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.drawer-table .col-name {
+  width: 100px;
+  font-weight: 500;
+}
+.drawer-table .col-decision {
+  width: 80px;
+}
+.drawer-table .col-decision.match { color: #2a6f49; }
+.drawer-table .col-decision.pass { color: #a33; }
+.drawer-table .col-reason {
+  color: #555;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.drawer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.drawer-actions button {
+  padding: 4px 12px;
+  font-size: 12px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #444;
+}
+.drawer-actions button:hover {
+  background: #f3f4f6;
+}
+
+/* v0.20.5：候选人记录顶部筛选 tab（显示全部 / 仅符合） */
+.drawer-filter-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #e1e4e8;
+}
+.drawer-filter-tab {
+  padding: 5px 14px;
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  color: #666;
+  transition: color 0.15s, border-color 0.15s;
+}
+.drawer-filter-tab:hover { color: #2467f0; }
+.drawer-filter-tab.active {
+  color: #2467f0;
+  border-bottom-color: #2467f0;
+  font-weight: 500;
+}
+
+/* v0.20.3：候选人记录默认展示 + 超出 28 条加待续提示行 */
+.drawer-overflow-hint {
+  margin-top: 12px;
+  padding: 10px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: #666;
+  background: #fafbfc;
+  border: 1px dashed #d0d7de;
+  border-radius: 4px;
+}
+.drawer-overflow-hint .overflow-count {
+  color: #b08000;
+  font-weight: 500;
+}
+.drawer-overflow-hint .btn-export-inline {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 10px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #2467f0;
+  text-decoration: none;
+  font-size: 11px;
+}
+.drawer-overflow-hint .btn-export-inline:hover {
+  background: #eef4ff;
+  border-color: #b0c8f0;
+}

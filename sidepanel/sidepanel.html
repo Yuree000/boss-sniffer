@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BOSS Sniffer</title>
+  <style>
+    /* Side Panel：宽度由用户拖 panel 边缘控制，自适应 */
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      padding: 12px;
+      box-sizing: border-box;
+      color: #222;
+      font-size: 13px;
+      min-width: 280px;
+    }
+    h2 {
+      font-size: 14px;
+      margin: 0 0 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h2 .tag {
+      font-size: 10px;
+      font-weight: 400;
+      color: #888;
+      background: #f0f0f0;
+      padding: 1px 6px;
+      border-radius: 8px;
+    }
+
+    /* === LLM 状态横幅 === */
+    .llm-banner {
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .llm-banner.warn {
+      background: #fff7e6;
+      border: 1px solid #f5a623;
+      color: #7a4f0f;
+    }
+    .llm-banner.ok {
+      background: #f3fbf6;
+      border: 1px solid #a4d4ba;
+      color: #2a6f49;
+    }
+    .llm-banner .model {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      background: rgba(0,0,0,0.05);
+      padding: 0 4px;
+      border-radius: 3px;
+    }
+
+    /* === 区块 === */
+    .section {
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .section:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+      margin-bottom: 0;
+    }
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #666;
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .jd-title {
+      color: #888;
+      font-weight: 400;
+    }
+
+    /* === 候选人评估卡（S3.6 紧凑版） === */
+    .eval-list {
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+    .eval-card {
+      padding: 6px 10px;
+      margin-bottom: 4px;
+      border: 1px solid #e5e5e5;
+      border-radius: 6px;
+      border-left-width: 4px;
+      background: #fff;
+    }
+    /* 二态决策配色（业务逻辑 §3）：符合=绿 / pass=红 */
+    .eval-card.match { border-left-color: #2a8; background: #f3fbf6; }
+    .eval-card.pass { border-left-color: #c33; background: #fdf5f5; }
+    /* 状态：pending 灰 / failed 暗红 */
+    .eval-card.pending { border-left-color: #aaa; background: #fafafa; }
+    .eval-card.failed { border-left-color: #d9534f; background: #fff5f5; }
+
+    /* 决策标签 + sayHi 内联 + 展开箭头（同行右侧） */
+    .decision-block {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .greet-inline {
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 8px;
+      white-space: nowrap;
+    }
+    .greet-inline.queued { background: #e6f0ff; color: #2467f0; }
+    .greet-inline.sent { background: #e8f5ec; color: #2a6f49; }
+    .greet-inline.failed { background: #fbebeb; color: #a33; }
+    /* v0.12.6：本轮 N 满，符合 但未入队 */
+    .greet-inline.over_quota { background: #ececec; color: #888; }
+    .pass-arrow {
+      color: #888;
+      font-size: 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    /* pass / failed 展开区 */
+    .pass-expand {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px dashed #e5e5e5;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .pass-reason {
+      color: #444;
+    }
+    .pass-reason strong {
+      color: #c33;
+    }
+    .pass-detail {
+      color: #777;
+      font-size: 11px;
+      margin-top: 3px;
+    }
+
+    /* pending 已等待秒数(observability v1) */
+    .pending-elapsed {
+      font-size: 10px;
+      color: #888;
+      margin-left: 4px;
+    }
+    .pending-elapsed.stale {
+      color: #c33;
+      font-weight: 600;
+    }
+
+    /* 失败 perAttempt 轨迹(observability v1) */
+    .attempt-trace {
+      margin-top: 6px;
+      padding: 6px;
+      background: #fafafa;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .attempt-summary {
+      color: #555;
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+    .attempt-item {
+      margin: 2px 0;
+      padding: 2px 4px;
+    }
+    .attempt-item summary {
+      cursor: pointer;
+      color: #444;
+    }
+    .attempt-msg {
+      color: #a33;
+      margin: 4px 0 2px 12px;
+    }
+    .attempt-body {
+      margin: 4px 0 0 12px;
+      padding: 4px 6px;
+      background: #fff;
+      border: 1px solid #eee;
+      border-radius: 3px;
+      font-size: 10px;
+      color: #666;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 160px;
+      overflow: auto;
+    }
+
+    .eval-row1 {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .name {
+      font-weight: 600;
+      font-size: 13px;
+    }
+    /* v0.12.5：名字可点 → 定位到 BOSS 页面候选人卡片 */
+    .name:hover {
+      text-decoration: underline;
+      text-decoration-color: #2467f0;
+      text-underline-offset: 2px;
+    }
+    .scenario-tag {
+      font-size: 10px;
+      font-weight: 400;
+      color: #666;
+      background: #ececec;
+      padding: 1px 5px;
+      border-radius: 4px;
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+    .decision {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 8px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .decision.match { color: #fff; background: #2a8; }
+    .decision.unknown { color: #fff; background: #f5a623; }
+    .decision.pass { color: #fff; background: #c33; }
+    /* v0.20.9 三态视觉：queued 浅灰静态 / pending 蓝色脉动（表明 LLM 真在跑） */
+    .decision.queued { color: #888; background: #eee; }
+    .decision.pending {
+      color: #fff; background: #2467f0;
+      animation: pending-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pending-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.65; }
+    }
+    .decision.failed { color: #fff; background: #d9534f; }
+
+    .meta {
+      color: #888;
+      font-size: 11px;
+      margin-top: 2px;
+    }
+    .reason {
+      color: #444;
+      font-size: 12px;
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+    .reason.failed { color: #a33; }
+
+    /* v0.19.1：条件展开列表（纵向堆叠，每条 M/O 上面条件文本 + 状态徽章，下面 reason）
+       原先 .breakdown 是 3 列表格，窄边栏下 dim-val / dim-reason 列被挤没；改纵向直接铺开 */
+    .conditions-list {
+      margin-top: 6px;
+    }
+    .condition-item {
+      margin-bottom: 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .condition-item:last-child {
+      margin-bottom: 0;
+      padding-bottom: 0;
+      border-bottom: none;
+    }
+    .condition-header {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .condition-key {
+      font-weight: 600;
+      color: #555;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .condition-text {
+      flex: 1;
+      color: #333;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .condition-status {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      white-space: nowrap;
+      font-weight: 500;
+    }
+    .condition-status.true { background: #e8f5ec; color: #2a6f49; }
+    .condition-status.false { background: #fbebeb; color: #a33; }
+    .condition-status.unknown { background: #fff7e6; color: #b08000; }
+    .condition-reason {
+      font-size: 11px;
+      color: #666;
+      line-height: 1.5;
+      padding-left: 4px;
+    }
+    .condition-reason.empty {
+      color: #bbb;
+      font-style: italic;
+    }
+
+    .retry-row {
+      margin-top: 6px;
+      text-align: right;
+    }
+    .retry-row button {
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+
+    /* sayHi 状态徽章（评估卡片内） */
+    .greet-tag {
+      display: inline-block;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-top: 4px;
+      vertical-align: middle;
+    }
+    .greet-tag.queued { background: #e6f0ff; color: #2467f0; }
+    .greet-tag.sent { background: #e8f5ec; color: #2a6f49; }
+    .greet-tag.failed { background: #fbebeb; color: #a33; }
+
+    /* 顶部全局 sayHi 状态条 */
+    .sayhi-bar {
+      padding: 6px 10px;
+      margin-bottom: 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .sayhi-bar.idle { background: #f0f4f8; color: #666; }
+    .sayhi-bar.running { background: #e6f0ff; color: #2467f0; }
+    .sayhi-bar.resting { background: #fff7e6; color: #7a4f0f; }
+    .sayhi-bar.disabled { background: #f5f5f5; color: #888; }
+
+    /* === 抓包统计 === */
+    .stat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 4px 0;
+    }
+    .stat-total {
+      font-size: 22px;
+      font-weight: 600;
+      color: #2467f0;
+      line-height: 1.2;
+    }
+    details { margin-top: 4px; }
+    details summary {
+      cursor: pointer;
+      color: #888;
+      font-size: 11px;
+    }
+    .path-list {
+      max-height: 120px;
+      overflow-y: auto;
+      margin-top: 4px;
+    }
+    .path-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 2px 0;
+      gap: 8px;
+      font-size: 11px;
+    }
+    .path {
+      color: #444;
+      flex: 1;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      word-break: break-all;
+    }
+    .count {
+      color: #888;
+      flex-shrink: 0;
+      min-width: 24px;
+      text-align: right;
+    }
+    .status-on { color: #2a8; font-weight: 600; }
+    .status-off { color: #c33; font-weight: 600; }
+    .empty {
+      color: #999;
+      font-size: 11px;
+      text-align: center;
+      padding: 10px 0;
+    }
+
+    /* === 按钮 === */
+    button {
+      padding: 5px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      border: 1px solid #ccc;
+      background: #fff;
+      border-radius: 4px;
+      color: #333;
+    }
+    button:hover { background: #f5f5f5; }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+    button.primary { background: #2467f0; color: #fff; border-color: #2467f0; }
+    button.primary:hover:not(:disabled) { background: #1a55d0; }
+    button.danger { color: #c33; border-color: #e9b3b3; }
+    button.danger:hover:not(:disabled) { background: #fff0f0; }
+    button + button { margin-left: 6px; }
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 4px;
+    }
+
+    /* === S3.5 顶部控制栏 === */
+    .control-bar {
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #eee;
+    }
+    .status-pill {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 8px;
+      font-weight: 600;
+      vertical-align: middle;
+    }
+    .status-pill.idle { background: #ececec; color: #666; }
+    .status-pill.running { background: #e8f5ec; color: #2a6f49; }
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .control-row label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #555;
+      flex-shrink: 0;
+    }
+    .control-row select {
+      flex: 1;
+      padding: 4px 8px;
+      font-size: 12px;
+      border: 1px solid #d0d7de;
+      border-radius: 4px;
+      background: #fff;
+      font-family: inherit;
+    }
+    .control-row .btn-start {
+      background: #2a8;
+      color: #fff;
+      border-color: #2a8;
+    }
+    .control-row .btn-start:hover:not(:disabled) {
+      background: #228a6e;
+    }
+    .control-row .btn-stop {
+      background: #c33;
+      color: #fff;
+      border-color: #c33;
+    }
+    .control-row .btn-stop:hover:not(:disabled) {
+      background: #a22;
+    }
+    .control-label-row {
+      margin-top: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #666;
+    }
+    .sayhi-toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: #555;
+    }
+    .sayhi-toggle-row input[type="checkbox"] {
+      cursor: pointer;
+    }
+    .sayhi-toggle-row label {
+      cursor: pointer;
+      user-select: none;
+    }
+    /* S6 循环：N/K 输入 + 继续按钮 + 进度行 */
+    .loop-goal-row {
+      gap: 8px !important;
+    }
+    .loop-goal {
+      font-size: 12px;
+      color: #555;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .loop-goal input {
+      font-size: 12px;
+      padding: 2px 4px;
+      width: 60px;
+      border: 1px solid #d0d7de;
+      border-radius: 3px;
+    }
+    .loop-goal input:disabled {
+      background: #f0f0f0;
+      color: #888;
+    }
+    /* v0.12.8: 浏览人数下拉 */
+    .loop-goal select {
+      font-size: 12px;
+      padding: 2px 4px;
+      border: 1px solid #d0d7de;
+      border-radius: 3px;
+      background: #fff;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .loop-goal select:disabled {
+      background: #f0f0f0;
+      color: #888;
+      cursor: not-allowed;
+    }
+    /* v0.12.8: 自动招呼 section header + 帮助 ⓘ */
+    .auto-greet-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .help-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 1px solid #b0b8c1;
+      color: #6a737d;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      background: #fff;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .help-icon:hover {
+      background: #2467f0;
+      color: #fff;
+      border-color: #2467f0;
+    }
+    .help-icon.open {
+      background: #2467f0;
+      color: #fff;
+      border-color: #2467f0;
+    }
+    .auto-greet-help {
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: #f6f8fa;
+      border: 1px solid #e1e4e8;
+      border-radius: 6px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #444;
+    }
+    .auto-greet-help p {
+      margin: 0 0 4px;
+    }
+    .auto-greet-help p:last-child {
+      margin-bottom: 0;
+    }
+    .auto-greet-help strong {
+      color: #222;
+    }
+    .control-row .btn-resume {
+      background: #2467f0;
+      color: #fff;
+      border-color: #2467f0;
+    }
+    .control-row .btn-resume:hover:not(:disabled) {
+      background: #1a55d0;
+    }
+    .loop-progress {
+      padding: 6px 12px;
+      font-size: 12px;
+      background: #f0f7ff;
+      border-bottom: 1px solid #d0e0f0;
+      color: #1f2328;
+      line-height: 1.5;
+    }
+    .loop-progress.paused {
+      background: #fff7e6;
+      border-bottom-color: #f5a623;
+      color: #7a4f0f;
+    }
+    .loop-progress.stopped {
+      background: #f0f0f0;
+      border-bottom-color: #d0d0d0;
+      color: #555;
+    }
+    .status-pill.resting { background: #e8f5ec; color: #2a6f49; }
+    .status-pill.paused { background: #fff7e6; color: #7a4f0f; }
+    /* S6 fix: 启动刷新提示条 */
+    .refresh-hint {
+      padding: 8px 12px;
+      font-size: 12px;
+      border-bottom: 1px solid #e1e4e8;
+      line-height: 1.5;
+    }
+    .refresh-hint.loading {
+      background: #fff7e6;
+      color: #7a4f0f;
+    }
+    .refresh-hint.warn {
+      background: #fbebeb;
+      color: #a33;
+      font-weight: 500;
+    }
+    /* === v0.13.0：顶部 tab 切换（推荐页 / 沟通页） === */
+    .page-tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 12px;
+      border-bottom: 2px solid #e1e4e8;
+    }
+    .page-tab {
+      flex: 1;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #666;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .page-tab:hover { color: #2467f0; background: #f6f8fa; }
+    .page-tab.active {
+      color: #2467f0;
+      border-bottom-color: #2467f0;
+      font-weight: 600;
+    }
+    .page-pane[data-page-pane] {
+      display: block;
+    }
+    .page-pane[data-page-pane][hidden] {
+      display: none;
+    }
+
+    /* === v0.13.0：沟通页池子状态条 === */
+    .sayhi-pool-bar {
+      padding: 8px 10px;
+      background: #f6f8fa;
+      border: 1px solid #e1e4e8;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: #555;
+    }
+    .sayhi-pool-bar .pool-count {
+      font-weight: 600;
+      color: #2467f0;
+    }
+    .sayhi-pool-bar .pool-stale {
+      color: #b08000;
+      font-size: 11px;
+    }
+    .sayhi-actions {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .sayhi-actions button {
+      flex: 1;
+      min-width: 0;
+    }
+    .sayhi-progress {
+      display: none;
+      padding: 6px 10px;
+      background: #fff7e6;
+      border: 1px solid #f5a623;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: #7a4f0f;
+    }
+    .sayhi-progress.active { display: block; }
+    .sayhi-progress-bar {
+      margin-top: 4px;
+      height: 6px;
+      background: #fae5b8;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .sayhi-progress-bar > div {
+      height: 100%;
+      background: #f5a623;
+      transition: width 0.3s;
+    }
+    .sayhi-empty {
+      color: #999;
+      font-size: 11px;
+      text-align: center;
+      padding: 24px 12px;
+      line-height: 1.6;
+      background: #fafbfc;
+      border-radius: 6px;
+    }
+    .sayhi-empty strong { color: #555; }
+
+  </style>
+</head>
+<body>
+  <h2>
+    BOSS Sniffer
+    <span><span class="tag" id="version-tag" title="三连点导出诊断包">v?.?.?</span> <span class="status-pill idle" id="status-pill">待机</span></span>
+  </h2>
+
+  <!-- v0.13.0：顶部 tab 切换 -->
+  <div class="page-tabs">
+    <button class="page-tab active" data-page="recommend">推荐页</button>
+    <button class="page-tab" data-page="sayhi">沟通页 · 新招呼</button>
+  </div>
+
+  <!-- ===== 推荐页 pane（现有功能，保持不变） ===== -->
+  <div class="page-pane" data-page-pane="recommend">
+
+  <!-- 顶部控制栏（S3.5） -->
+  <div class="control-bar">
+    <div class="control-row">
+      <label for="jd-current">当前 JD</label>
+      <select id="jd-current">
+        <option value="">— 加载中 —</option>
+      </select>
+    </div>
+    <div class="control-label-row auto-greet-header">
+      <span>自动招呼候选人</span>
+      <span class="help-icon" id="auto-greet-help-toggle" title="点击查看说明">?</span>
+    </div>
+    <div class="auto-greet-help" id="auto-greet-help" style="display:none;">
+      <p>启动后扩展会自动滚动 BOSS 推荐流，对每个候选人做 LLM 评估，符合 JD 的候选人会自动打招呼。</p>
+      <p><strong>候选人来源</strong>：选择从 BOSS 哪个分页拉候选人。</p>
+      <p><strong>招呼数</strong>：本轮目标招呼几个人，达到就停止。</p>
+      <p><strong>浏览人数</strong>：本轮最多评估几个候选人，达到也停（避免无限刷）。推荐流每页加载 15 人，所以是 15 的倍数。</p>
+      <p>招呼数和浏览人数二者满足任一就停止本轮。</p>
+    </div>
+    <div class="control-row">
+      <label class="loop-goal">候选人来源
+        <select id="loop-target-tab">
+          <option value="recommend">推荐（默认）</option>
+          <option value="latest">最新</option>
+        </select>
+      </label>
+    </div>
+    <div class="control-row loop-goal-row">
+      <label class="loop-goal">招呼数 <input id="loop-goal-n" type="number" min="1" placeholder="如 5"></label>
+      <label class="loop-goal">浏览人数
+        <select id="loop-goal-k">
+          <option value="">—</option>
+          <option value="15">15</option>
+          <option value="30">30</option>
+          <option value="45">45</option>
+          <option value="60">60</option>
+          <option value="75">75</option>
+          <option value="90">90</option>
+          <option value="105">105</option>
+          <option value="120">120</option>
+          <option value="150">150</option>
+          <option value="180">180</option>
+          <option value="240">240</option>
+          <option value="300">300</option>
+          <option value="450">450</option>
+          <option value="600">600</option>
+        </select>
+      </label>
+    </div>
+    <div class="control-row">
+      <button id="btn-start" class="btn-start">▶ 开始本轮</button>
+      <button id="btn-stop" class="btn-stop" disabled>■ 停止本轮</button>
+      <button id="btn-resume" class="btn-resume" style="display:none;">▶ 继续</button>
+    </div>
+    <div class="sayhi-toggle-row">
+      <input type="checkbox" id="sayhi-toggle">
+      <label for="sayhi-toggle">启用自动打招呼</label>
+    </div>
+  </div>
+
+  <!-- S6 循环进度行（默认隐藏，仅 RUNNING/RESTING/PAUSED/STOPPED 状态显示） -->
+  <div id="loop-progress" class="loop-progress" style="display:none;"></div>
+
+  <!-- S6 fix: 启动时刷新提示条（默认隐藏） -->
+  <div id="refresh-hint" class="refresh-hint" style="display:none;"></div>
+
+  <!-- LLM 状态横幅（带跳转按钮） -->
+  <div id="llm-banner" class="llm-banner warn" style="display:none;">
+    <strong>未配置 LLM</strong> — 评估无法进行，
+    <a href="#" id="banner-open-options" style="color:inherit; text-decoration:underline;">点此打开设置页</a> 填入 API Key。
+  </div>
+
+  <!-- sayHi 状态栏 -->
+  <div id="sayhi-bar" class="sayhi-bar disabled" style="display:none;">
+    <span id="sayhi-bar-text">sayHi: 已停用</span>
+    <span id="sayhi-bar-count" style="font-size:10px;"></span>
+  </div>
+
+  <!-- 候选人评估区 -->
+  <div class="section">
+    <div class="section-title">
+      <span>候选人评估 <span id="eval-count" style="color:#888;font-weight:400;">(0)</span></span>
+      <span class="jd-title" id="jd-title">JD: 加载中…</span>
+    </div>
+    <div id="evaluations" class="eval-list">
+      <div class="empty">尚未评估到候选人 — 选 JD + 点「开始本轮」后会自动评估</div>
+    </div>
+  </div>
+
+  </div>
+  <!-- ===== /推荐页 pane ===== -->
+
+  <!-- ===== 沟通页 pane（v0.13.0 新增） ===== -->
+  <div class="page-pane" data-page-pane="sayhi" hidden>
+    <div class="section-title" style="margin-bottom:10px;">
+      <span>新招呼候选人 <span id="sayhi-pool-count" style="color:#888;font-weight:400;">(0)</span></span>
+      <span class="jd-title" id="sayhi-jd-title">JD: 加载中…</span>
+    </div>
+
+    <!-- v0.17.1.0：当前话术下拉（评估「符合」自动求简历时用） -->
+    <div class="control-row" style="margin-bottom:8px;display:flex;align-items:center;gap:8px;font-size:12px;">
+      <label for="greet-current" style="white-space:nowrap;">当前话术</label>
+      <select id="greet-current" style="flex:1;font-size:12px;padding:3px 6px;">
+        <option value="">— 加载中 —</option>
+      </select>
+      <span id="auto-action-badge" style="display:none;font-size:11px;color:#00b572;white-space:nowrap;" title="admin 已开启批量评估自动求简历。批量评估时所有「符合」的候选人会自动走 输入话术 → 求简历。单评始终需要 HR 手动点 🎯">🎯 批量自动 ON</span>
+    </div>
+
+    <div class="sayhi-pool-bar" id="sayhi-pool-bar">
+      <div>📥 候选人池 <span class="pool-count" id="sayhi-pool-count-2">0</span> 人
+        <span id="sayhi-pool-stale-hint" class="pool-stale" style="margin-left:8px;display:none;">· 池子可能陈旧，建议重新扫描</span>
+      </div>
+      <div style="margin-top:4px;font-size:11px;color:#888;">
+        切到 BOSS「沟通」tab 后点扫描；评估超过 30 分钟会自动重评
+      </div>
+    </div>
+
+    <div class="sayhi-actions">
+      <button id="btn-sayhi-scan" class="primary">🔍 扫描本页候选人</button>
+      <button id="btn-sayhi-eval" disabled>⚡ 一键评估</button>
+      <button id="btn-sayhi-stop" class="danger" style="display:none;">■ 停止</button>
+    </div>
+
+    <div class="sayhi-progress" id="sayhi-progress">
+      <div id="sayhi-progress-text">评估中 0 / 0</div>
+      <div class="sayhi-progress-bar"><div id="sayhi-progress-fill" style="width:0%;"></div></div>
+    </div>
+
+    <div id="sayhi-evaluations" class="eval-list">
+      <div class="sayhi-empty">
+        <strong>开始评估「新招呼」候选人</strong><br>
+        1. 在 BOSS 直聘切到「沟通」→「新招呼」tab<br>
+        2. 回这里点 <em>🔍 扫描本页候选人</em>，扫到的人进池<br>
+        3. 点 <em>⚡ 一键评估</em>，LLM 跑完后这里出符合 / pass 结果
+      </div>
+    </div>
+
+    <!-- v0.14.0-pre：一键操作调试日志（操作链路稳定后可考虑隐藏或精简） -->
+    <details id="sayhi-debug-details" style="margin-top:10px;">
+      <summary style="cursor:pointer;font-size:11px;color:#888;user-select:none;">
+        🐛 操作调试日志 <span id="sayhi-debug-count" style="color:#666;">(0)</span>
+        <button id="btn-sayhi-debug-clear" style="margin-left:8px;font-size:10px;padding:1px 6px;cursor:pointer;">清空</button>
+      </summary>
+      <div id="sayhi-debug-log" style="font-family:Consolas,monospace;font-size:10px;line-height:1.5;max-height:240px;overflow-y:auto;background:#fafafa;padding:6px;border:1px solid #eee;margin-top:4px;border-radius:3px;"></div>
+    </details>
+
+    <div style="margin-top:8px;text-align:right;">
+      <button id="btn-sayhi-clear-pool" class="danger">清空池子</button>
+    </div>
+  </div>
+  <!-- ===== /沟通页 pane ===== -->
+
+  <!-- 操作按钮（footer 共用） -->
+  <div class="footer">
+    <span>
+      <button id="btn-dashboard">📊 看板</button>
+      <button id="btn-options">⚙️ 设置</button>
+    </span>
+  </div>
+
+  <script src="../lib/city-codes.js"></script>
+  <!-- v0.17.0 storage 重构：jd-templates 依赖 BossStorageSync，必须先加载 -->
+  <!-- v0.17.1.0：greet-templates 并列加载 -->
+  <script src="../lib/storage-sync.js"></script>
+  <script src="../lib/jd-templates.js"></script>
+  <script src="../lib/greet-templates.js"></script>
+  <script src="../lib/events.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BOSS Sniffer 设置</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>BOSS Sniffer 设置</h1>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <button id="btn-open-dashboard" class="secondary" style="font-size:12px; padding:4px 12px;">📊 打开看板</button>
+      <span class="version" id="version-tag">v0.4.0</span>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- ============ 大模型配置 ============ -->
+    <section class="card">
+      <div class="section-title-row">
+        <div>
+          <h2>大模型配置</h2>
+          <p class="hint">从已配置的大模型中选择当前评估引擎；新增或编辑时在右侧配置栏完成。</p>
+        </div>
+        <div class="section-actions">
+          <button id="btn-llm-help" class="secondary">使用教程</button>
+          <button id="btn-llm-new" class="primary">+ 新增大模型</button>
+        </div>
+      </div>
+
+      <div id="current-llm-summary" class="current-model-summary">
+        <span class="summary-label">当前使用</span>
+        <span class="summary-value">未选择大模型</span>
+      </div>
+
+      <div class="llm-list-wrap">
+        <div id="llm-empty" class="jd-empty" style="display:none;">还没有配置大模型。</div>
+        <div id="llm-list" class="manage-list"></div>
+      </div>
+      <span id="llm-list-test-result" class="test-result"></span>
+    </section>
+    <div id="llm-drawer" class="side-drawer hidden">
+      <div class="drawer-overlay"></div>
+      <aside class="drawer-panel" aria-labelledby="llm-drawer-title">
+        <div class="drawer-header">
+          <h3 id="llm-drawer-title">新增大模型</h3>
+          <button id="llm-drawer-close" class="modal-close">×</button>
+        </div>
+
+        <div id="llm-form" class="drawer-body">
+          <input id="llm-edit-id" type="hidden">
+
+          <!-- v0.17.1：HR 快速配置区。选了 Wiz / DeepSeek 自动填好高级字段 -->
+          <div class="form-row">
+            <label for="llm-preset">厂商</label>
+            <select id="llm-preset">
+              <option value="wiz">Wiz（公司中转，推荐）</option>
+              <option value="deepseek">DeepSeek 官方</option>
+              <option value="custom">自定义（高级，自由填写所有字段）</option>
+            </select>
+            <span class="field-hint">选完厂商，下方会出现该厂商可用的模型。Key 在下面输入</span>
+          </div>
+
+          <div class="form-row" id="llm-preset-model-row">
+            <label for="llm-preset-model">模型</label>
+            <select id="llm-preset-model"></select>
+            <span class="field-hint" id="llm-preset-model-hint"></span>
+          </div>
+
+          <div class="form-row">
+            <label for="llm-apikey" id="llm-apikey-label">API Key</label>
+            <input id="llm-apikey" type="password" placeholder="留空则保留已存值；填写则覆盖">
+            <span class="field-hint">key 仅存本机，不会同步到 GitHub 或上传外网</span>
+          </div>
+
+          <!-- 高级配置（默认折叠）。HR 选了「自定义」时自动展开 -->
+          <details id="llm-advanced-details">
+            <summary>高级配置（手动改 baseUrl / 协议 / 鉴权 / 并发数）</summary>
+
+            <div class="form-grid-2">
+              <div class="form-row">
+                <label for="llm-name">配置名称</label>
+                <input id="llm-name" type="text" placeholder="如：DeepSeek 招聘判别">
+              </div>
+              <div class="form-row">
+                <label for="llm-provider-name">厂商名称</label>
+                <input id="llm-provider-name" type="text" placeholder="如：DeepSeek / 通义千问 / OpenRouter">
+              </div>
+            </div>
+
+            <div class="form-row">
+              <label for="llm-protocol">协议类型</label>
+              <select id="llm-protocol">
+                <option value="openai-chat">OpenAI Compatible（/v1/chat/completions）</option>
+                <option value="anthropic-messages">Anthropic Messages（/v1/messages）</option>
+              </select>
+              <span class="field-hint">DeepSeek、通义千问、Kimi、OpenRouter、OneAPI 通常选 OpenAI Compatible；Claude 官方选 Anthropic Messages。</span>
+            </div>
+
+            <div class="form-row">
+              <label for="llm-baseurl">Base URL</label>
+              <input id="llm-baseurl" type="text" placeholder="https://api.deepseek.com 或 https://api.anthropic.com">
+              <span class="field-hint">OpenAI Compatible 可填 host 或带 <code>/v1</code> 的前缀；Anthropic 可填 host 或带 <code>/v1</code> 的前缀。</span>
+            </div>
+
+            <div class="form-row">
+              <label for="llm-authtype">鉴权方式</label>
+              <select id="llm-authtype">
+                <option value="x-api-key">x-api-key（Anthropic 官方）</option>
+                <option value="bearer">Bearer Token（公司代理 / Claude Relay 等）</option>
+              </select>
+              <span class="field-hint">Anthropic 官方 key 选 x-api-key；<code>cr_</code> 等代理 token 选 Bearer</span>
+            </div>
+
+            <div class="form-row">
+              <label for="llm-model">Model（自定义模型名）</label>
+              <input id="llm-model" type="text" list="llm-model-presets" placeholder="deepseek-chat">
+              <datalist id="llm-model-presets">
+                <option value="deepseek-v4-flash"></option>
+                <option value="deepseek-v4-pro"></option>
+                <option value="deepseek-chat"></option>
+                <option value="deepseek-reasoner"></option>
+                <option value="qwen-plus"></option>
+                <option value="qwen-turbo"></option>
+                <option value="moonshot-v1-8k"></option>
+                <option value="gpt-4.1-mini"></option>
+                <option value="claude-sonnet-4-6"></option>
+                <option value="claude-opus-4-7"></option>
+                <option value="claude-haiku-4-5-20251001"></option>
+              </datalist>
+              <span class="field-hint">「自定义」厂商时填这里；选 Wiz / DeepSeek 时由上方模型下拉自动同步。</span>
+            </div>
+
+            <div class="form-row">
+              <label for="llm-concurrency">并发数</label>
+              <input id="llm-concurrency" type="number" min="1" max="15" step="1">
+              <span class="field-hint">一批候选人（通常 15 人）同时调 LLM 的最大请求数。代理网关易超时 → 调到 3；Anthropic 直连 → 可到 10。默认 5</span>
+            </div>
+          </details>
+
+          <div class="actions">
+            <button id="btn-llm-save" class="primary">保存</button>
+            <button id="btn-llm-cancel" class="secondary">取消</button>
+            <button id="btn-test-llm" class="secondary">测试连接</button>
+            <span id="test-result" class="test-result"></span>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- ============ JD 模板管理 ============ -->
+    <section class="card">
+      <h2>JD 模板管理</h2>
+      <p class="hint">岗位画像模板（增删改查）。当前选中由侧边栏控制；admin 仅展示，列表中标记 ● 的为侧边栏选中项。</p>
+
+      <div class="jd-list-wrap">
+        <table class="jd-table" id="jd-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>必要 (M)</th>
+              <th>可选 (N)</th>
+              <th>阈值 (K)</th>
+              <th class="actions-col">操作</th>
+            </tr>
+          </thead>
+          <tbody id="jd-list-body"></tbody>
+        </table>
+        <div id="jd-empty" class="jd-empty" style="display:none;">暂无 JD 模板，点击下方"新建"。</div>
+      </div>
+
+      <div class="actions">
+        <button id="btn-jd-new" class="primary">+ 新建 JD 模板</button>
+      </div>
+
+      <!-- 编辑表单（默认隐藏，新建/编辑时展开） -->
+      <div id="jd-form" class="jd-form" style="display:none;">
+        <h3 id="jd-form-title">新建 JD 模板</h3>
+        <input id="jd-edit-id" type="hidden">
+
+        <div class="form-row">
+          <label for="jd-name">名称 <span class="required">*</span></label>
+          <input id="jd-name" type="text" placeholder="如：测试工程师 / AI CX">
+        </div>
+
+        <div class="form-row">
+          <label>必要条件 <span class="field-hint">任一不满足或信息不足 → pass</span></label>
+          <div id="must-list" class="condition-list"></div>
+          <button id="btn-add-must" type="button" class="secondary condition-add-btn">+ 添加必要条件</button>
+        </div>
+
+        <div class="form-row">
+          <label>可选条件 <span class="field-hint">满足达阈值即视为符合</span></label>
+          <div id="opt-list" class="condition-list"></div>
+          <button id="btn-add-opt" type="button" class="secondary condition-add-btn">+ 添加可选条件</button>
+        </div>
+
+        <div class="form-row threshold-row">
+          <label for="jd-threshold">可选阈值 <span class="field-hint">满足 ≥ 该数视为符合</span></label>
+          <input id="jd-threshold" type="number" min="0" placeholder="0">
+        </div>
+
+        <div class="actions">
+          <button id="btn-jd-save" class="primary">保存</button>
+          <button id="btn-jd-cancel" class="secondary">取消</button>
+          <button id="btn-jd-preview-form" type="button" class="secondary">预览 prompt</button>
+          <span id="jd-form-status" class="test-result"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 话术模板管理（v0.17.1.0） ============ -->
+    <section class="card">
+      <h2>话术模板管理</h2>
+      <p class="hint">评估「符合」自动求简历前，先发的寒暄消息模板。HR 可在 sidepanel 选当前用哪条；text 至少 5 字符。</p>
+
+      <div class="jd-list-wrap">
+        <table class="jd-table" id="greet-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>话术正文（前 50 字）</th>
+              <th>字符数</th>
+              <th class="actions-col">操作</th>
+            </tr>
+          </thead>
+          <tbody id="greet-list-body"></tbody>
+        </table>
+        <div id="greet-empty" class="jd-empty" style="display:none;">暂无话术模板，点击下方"新建"。</div>
+      </div>
+
+      <div class="actions">
+        <button id="btn-greet-new" class="primary">+ 新建话术</button>
+      </div>
+
+      <!-- 编辑表单（默认隐藏） -->
+      <div id="greet-form" class="jd-form" style="display:none;">
+        <h3 id="greet-form-title">新建话术模板</h3>
+        <input id="greet-edit-id" type="hidden">
+
+        <div class="form-row">
+          <label for="greet-name">名称 <span class="required">*</span></label>
+          <input id="greet-name" type="text" placeholder="如：技术岗-寒暄 / 销售岗-自我介绍">
+        </div>
+
+        <div class="form-row">
+          <label for="greet-text">话术正文 <span class="required">*</span> <span class="field-hint">最少 5 字符；候选人会收到这条独立消息，然后才是 BOSS 自动的「方便发一份你的简历过来吗？」</span></label>
+          <textarea id="greet-text" rows="4" style="width:100%;font-family:inherit;font-size:13px;padding:8px;border:1px solid #d0d7de;border-radius:4px;resize:vertical;" placeholder="您好，看了您的简历，跟我们这边的岗位挺契合，方便聊聊吗？"></textarea>
+          <span id="greet-char-count" class="field-hint">0 字符</span>
+        </div>
+
+        <div class="actions">
+          <button id="btn-greet-save" class="primary">保存</button>
+          <button id="btn-greet-cancel" class="secondary">取消</button>
+          <span id="greet-form-status" class="test-result"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 数据导入 / 导出 ============ -->
+    <!-- v0.17.0-prod：FSA 备份链路未完工，「从备份目录导入历史数据」按钮在 admin.js 里隐藏 -->
+    <section class="card">
+      <h2>数据导入 / 导出</h2>
+      <p class="hint" id="hint-fsa-backup" hidden>v0.17.0 起，备份文件按月分片存到你在侧栏设置的本地文件夹。换电脑或卸载重装时用下面的按钮恢复。</p>
+      <div class="admin-actions">
+        <button id="btn-import-backup" hidden>从备份目录导入历史数据</button>
+        <button id="btn-export-jd">导出 JD 模板 JSON</button>
+        <input type="file" id="file-import-jd" accept=".json" style="display:none">
+        <button id="btn-import-jd">导入 JD 模板 JSON</button>
+      </div>
+      <div id="import-result" class="import-result"></div>
+    </section>
+
+    <!-- ============ 自动打招呼 ============ -->
+    <section class="card">
+      <h2>自动打招呼</h2>
+      <div class="banner warn" style="background:#fff5e6;border-color:#e88a00;color:#7a4f0f;">
+        <strong>⚠️ chrome.debugger 模式</strong>：启用后会模拟点击 BOSS 页面"打招呼"按钮，
+        浏览器顶部会持续显示<strong>"已开始调试此浏览器"</strong>警告条。这是扩展正常工作的副作用，
+        关闭 sayHi 开关警告条即消失。
+      </div>
+
+      <p class="hint">"启用自动打招呼" 已搬到侧边栏运行时控制；admin 仅配置节流参数。判定标准：v0.12 二态决策后仅「符合」候选人会被入队。</p>
+
+      <div class="form-grid-2">
+        <div class="form-row">
+          <label for="sayhi-delay-min">延迟下限（毫秒）</label>
+          <input id="sayhi-delay-min" type="number" min="0" step="100">
+        </div>
+        <div class="form-row">
+          <label for="sayhi-delay-max">延迟上限（毫秒）</label>
+          <input id="sayhi-delay-max" type="number" min="0" step="100">
+        </div>
+      </div>
+      <span class="field-hint" style="margin-top:-8px; display:block;">每次打招呼之间随机等待 [下限, 上限] 毫秒，模拟人类操作</span>
+
+      <div class="form-grid-2">
+        <div class="form-row">
+          <label for="sayhi-rest-after">连续 N 人后休息</label>
+          <input id="sayhi-rest-after" type="number" min="1" step="1">
+        </div>
+        <div class="form-row">
+          <label for="sayhi-rest-minutes">休息时长（分钟，逗号分两值取随机）</label>
+          <input id="sayhi-rest-minutes" type="text" placeholder="5,10">
+        </div>
+      </div>
+      <span class="field-hint" style="margin-top:-8px; display:block;">打满 N 人后强制休息 [min, max] 分钟，让账号看起来像真人</span>
+
+      <!-- v0.17.1.3 评估「符合」→ 自动求简历（批量专属，单评始终手动） -->
+      <h3 style="margin-top:20px;">评估后自动求简历（v0.17.1.3）</h3>
+      <div class="banner warn" style="background:#fff5e6;border-color:#e88a00;color:#7a4f0f;">
+        <strong>⚠️ 仅批量评估自动 / 单评始终手动</strong>：开启后，批量评估时所有判为「符合」的候选人会自动：
+        ① 选中卡片 ② 输入当前话术 ③ 点求简历 ④ 弹窗确定。
+        <strong>单评（点单个候选人 ⚡）永远不会自动求简历</strong>——HR 看到结果后自己点 🎯 决定。
+        默认 OFF；跑通 1 人确认安全后再开。
+      </div>
+
+      <div class="form-row">
+        <label>
+          <input id="auto-action-enabled" type="checkbox" style="margin-right:6px;">
+          <strong>启用批量评估自动求简历</strong>
+        </label>
+        <span class="field-hint">关闭时批量评估也只评估不操作；HR 看完每张卡片手动点 🎯 决定</span>
+      </div>
+
+      <div class="form-row">
+        <label>
+          <input id="auto-action-dry-run" type="checkbox" style="margin-right:6px;">
+          <strong>试跑模式（dry-run）</strong>
+        </label>
+        <span class="field-hint">开启时执行链路走完所有定位 + log，但**不**点最后的发送 / 确定。BOSS UI 改时调试用</span>
+      </div>
+
+      <div class="form-grid-2">
+        <div class="form-row">
+          <label for="auto-action-cooldown-min">候选人间冷却下限（毫秒）</label>
+          <input id="auto-action-cooldown-min" type="number" min="0" step="100">
+        </div>
+        <div class="form-row">
+          <label for="auto-action-cooldown-max">候选人间冷却上限（毫秒）</label>
+          <input id="auto-action-cooldown-max" type="number" min="0" step="100">
+        </div>
+      </div>
+      <span class="field-hint" style="margin-top:-8px; display:block;">
+        自动求简历专属冷却（默认 2-4s）。链路自身已耗 13-25s/人，叠加大幅冷却会让 HR 觉得卡死。
+      </span>
+
+      <!-- v0.17.0.10 POC A7：沟通页 DOM 扫描风控参数 -->
+      <h3 style="margin-top:20px;">沟通页 DOM 扫描（v0.17.0.10）</h3>
+      <p class="field-hint" style="margin-top:-4px;">
+        评估"新招呼"候选人时，主扩展会模拟点击每个候选人触发 BOSS 渲染右侧详情面板，
+        然后扫 DOM 拿期望城市/个人简介/工作经历长文本喂 LLM。
+        <strong>必须串行 + 拟人冷却</strong>，避免被 BOSS 行为分析识别。
+      </p>
+      <div class="form-grid-2">
+        <div class="form-row">
+          <label for="sayhidom-max-per-run">单批扫描上限（人）</label>
+          <input id="sayhidom-max-per-run" type="number" min="0" step="1">
+        </div>
+        <div class="form-row">
+          <label>
+            <input id="sayhidom-proactive-fetch" type="checkbox" style="margin-right:6px;">
+            启用 v0.13.3 主动 fetch（默认关）
+          </label>
+        </div>
+      </div>
+      <span class="field-hint" style="margin-top:-8px; display:block;">
+        <strong>单批上限</strong>：轮 1 测试用 1，跑通后调 5、15；0 = 不限制（不推荐）。<br>
+        <strong>主动 fetch</strong>：默认关。DOM 扫描的模拟点击已经会让 BOSS 自调 chat/geek/info（HR 真实行为），开启会双倍流量增加风控嫌疑。
+      </span>
+
+      <div class="form-grid-2">
+        <div class="form-row">
+          <label for="sayhidom-cooldown-min">冷却下限（毫秒）</label>
+          <input id="sayhidom-cooldown-min" type="number" min="0" step="100">
+        </div>
+        <div class="form-row">
+          <label for="sayhidom-cooldown-max">冷却上限（毫秒）</label>
+          <input id="sayhidom-cooldown-max" type="number" min="0" step="100">
+        </div>
+      </div>
+      <span class="field-hint" style="margin-top:-8px; display:block;">
+        每扫一个候选人后随机等待 [下限, 上限] 毫秒再扫下一个。HR 看简历通常 5-10 秒，默认 5000-8000。
+      </span>
+
+      <!-- PoC 测试工具 -->
+      <details style="margin-top:16px;">
+        <summary style="cursor:pointer; font-size:12px; color:#555;">🔧 调试工具（PoC 测试）</summary>
+        <div style="padding:12px; background:#fafafa; border-radius:4px; margin-top:8px;">
+          <div style="font-size:12px; color:#666; margin-bottom:10px; line-height:1.6;">
+            sayHi 模式依赖 chrome.debugger，先用下面工具确认能正常工作再启用全自动。
+            <br>测试前请先在另一个标签打开 <code>www.zhipin.com</code> 推荐流页面。
+          </div>
+          <div class="actions" style="margin-bottom:10px;">
+            <button id="btn-find-tab" class="secondary">① 找 BOSS tab</button>
+            <button id="btn-test-debugger" class="secondary">② 测试 debugger 连接</button>
+            <span id="poc-status" class="test-result" style="margin-left:0;"></span>
+          </div>
+
+          <div class="form-row">
+            <label for="test-candidate-id">候选人 candidateId（用于步骤 ③ ④）</label>
+            <input id="test-candidate-id" type="text" placeholder="从 sidepanel 评估卡片或 IndexedDB 复制">
+          </div>
+          <div class="actions" style="flex-wrap:wrap;">
+            <button id="btn-test-sayhi" class="secondary">③ 测试对该候选人 sayHi</button>
+            <button id="btn-diagnose-dom" class="secondary">④ 🔬 诊断 BOSS DOM</button>
+          </div>
+          <div style="font-size:11px; color:#888; margin-top:8px;">
+            ④ 当 ③ 报"未找到候选人元素"时用：扫描 BOSS 当前页面，dump 出实际的 attribute 命名给开发者看。
+          </div>
+          <pre id="diag-output" style="display:none; margin-top:10px; padding:8px; background:#1f2328; color:#e6edf3; border-radius:4px; font-size:10px; max-height:400px; overflow:auto; white-space:pre-wrap; word-break:break-all;"></pre>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ v0.20.6 危险操作（开发调试用） ============ -->
+    <section class="card">
+      <div class="section-title-row">
+        <div>
+          <h2 style="color:#c33;">⚠️ 危险操作（开发调试用）</h2>
+          <p class="hint">普通使用不需要这里的操作。HR 想"重新开始"直接点 sidepanel 的 [开始本轮]，会自动清空当前轮候选人评估。下面按钮供开发调试时彻底重置 IndexedDB。</p>
+        </div>
+      </div>
+      <div style="padding:12px; background:#fff5f5; border:1px solid #fecaca; border-radius:4px;">
+        <div style="font-size:12px; color:#666; margin-bottom:10px; line-height:1.6;">
+          <strong>清空评估</strong>：只清 evaluations 表（看板漏斗 / JD 分析 / 趋势 / 候选人记录 <strong style="color:#c33;">全部清空</strong>，sayhi 招呼历史 + 抓包数据保留）。<br>
+          <strong>清空全部</strong>：清 captures + evaluations + events 三个表（看板所有数据归零，sayhi_pool / 话术 / JD 模板保留）。<br>
+          <span style="color:#888;">两个操作都不可撤销。点击后需要二次 + 三次确认。</span>
+        </div>
+        <div class="actions" style="gap:8px;">
+          <button id="btn-danger-clear-eval" class="secondary" style="border-color:#fbb; color:#c33;">清空评估（仅 evaluations 表）</button>
+          <button id="btn-danger-clear-all" class="secondary" style="border-color:#fbb; color:#c33;">清空全部（三表）</button>
+          <span id="danger-op-status" class="test-result" style="margin-left:8px; font-size:12px;"></span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="bottombar">
+    <span id="save-status" class="save-status"></span>
+    <button id="btn-reset" class="secondary">重置为默认</button>
+    <button id="btn-save" class="primary">保存所有更改</button>
+  </footer>
+
+  <!-- 预览 prompt modal（默认隐藏） -->
+  <div id="prompt-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="prompt-modal-title">预览 SYSTEM_PROMPT</h3>
+        <button id="prompt-modal-close" class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="prompt-modal-content"></pre>
+      </div>
+      <div class="modal-footer">
+        <span class="modal-hint">这是 LLM 实际收到的 system prompt。</span>
+        <button id="prompt-modal-copy" class="secondary">复制全文</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="llm-tutorial-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>大模型配置教程</h3>
+        <button id="llm-tutorial-close" class="modal-close">×</button>
+      </div>
+      <div class="modal-body tutorial-body">
+        <section>
+          <h4>DeepSeek</h4>
+          <p>协议选择 OpenAI Compatible，Base URL 填 <code>https://api.deepseek.com</code>，模型可填 <code>deepseek-chat</code> 或 <code>deepseek-reasoner</code>，鉴权方式选 Bearer Token。</p>
+        </section>
+        <section>
+          <h4>通义千问 / DashScope</h4>
+          <p>协议选择 OpenAI Compatible，Base URL 通常填兼容模式地址，模型可填 <code>qwen-plus</code> 或 <code>qwen-turbo</code>，鉴权方式选 Bearer Token。</p>
+        </section>
+        <section>
+          <h4>Kimi</h4>
+          <p>协议选择 OpenAI Compatible，Base URL 填 Kimi 的 OpenAI 兼容接口地址，模型可填 <code>moonshot-v1-8k</code>，鉴权方式选 Bearer Token。</p>
+        </section>
+        <section>
+          <h4>Claude / Anthropic</h4>
+          <p>协议选择 Anthropic Messages，Base URL 填 <code>https://api.anthropic.com</code>，模型填 Claude 模型名，鉴权方式选 x-api-key。</p>
+        </section>
+        <section>
+          <h4>自定义兼容接口</h4>
+          <p>OneAPI、OpenRouter 或公司代理如果兼容 OpenAI Chat Completions，协议选 OpenAI Compatible，Base URL 填到服务前缀即可；保存或测试时浏览器会请求该域名访问权限。</p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- v0.17.0 storage 重构：jd-templates / admin.js 依赖 BossStorageSync，必须先加载 -->
+  <script src="../lib/storage-sync.js"></script>
+  <script src="../lib/jd-templates.js"></script>
+  <script src="../lib/greet-templates.js"></script>
+  <script src="../lib/prompt-builder.js"></script>
+  <script src="../lib/llm-client.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>
