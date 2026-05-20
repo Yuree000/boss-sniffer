@@ -777,6 +777,26 @@ $('jd-current').addEventListener('change', async function (ev) {
 // v0.25.0：删「当前话术」下拉 + loadGreetDropdown（话术 v0.25.2 集成 JD 后由 JD 默认话术决定）
 //   过渡期沿用 appConfig.currentGreetTemplateId（admin 仍有话术管理；HR 此前选过的话术继续生效）
 
+// v1.0.1：推荐页「清空列表」inline 按钮 handler（跟沟通页 clear-pool-inline 对仗，复用现有 CLEAR_EVALUATIONS message）
+//   清的是 evaluations 表（候选人评估列表），看板/事件流的判定结果统计不受影响
+const btnClearEvalInline = $('btn-clear-evaluations-inline');
+if (btnClearEvalInline) {
+  btnClearEvalInline.addEventListener('click', async function () {
+    if (!confirm('确定清空推荐页候选人列表吗？\n（已写入看板的判定结果统计不受影响）')) return;
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'CLEAR_EVALUATIONS' });
+      if (res && res.ok) {
+        showToast('✅ 列表已清空');
+      } else {
+        showToast('清空失败：' + ((res && res.error) || '未知错误'), 'error');
+      }
+    } catch (e) {
+      showToast('清空失败：' + e.message, 'error');
+    }
+    refresh();
+  });
+}
+
 // v0.17.1.3：检查 appConfig.autoAction.enabledBatchEval（批量自动开关），决定是否亮「批量自动 ON」徽章
 //   单评始终手动，不需要徽章（HR 始终自己点 🎯 决定）
 async function refreshAutoActionBadge() {
@@ -1473,15 +1493,16 @@ setInterval(refreshAutoActionBadge, 5000);
   });
   // v0.25.0：删 #sayhi-loop-goal-n change handler（maxGreetN 概念已废弃）
 
-  // v0.25.0：候选人池卡片内嵌「清空池子」按钮 handler（复用现有 CLEAR_SAYHI_POOL message）
+  // v0.25.0：候选人池卡片内嵌「清空列表」按钮 handler（复用现有 CLEAR_SAYHI_POOL message）
+  // v1.0.1：文案从「清空池子」→「清空列表」（跟推荐页保持一致）
   const btnClearInline = $('btn-sayhi-clear-pool-inline');
   if (btnClearInline) {
     btnClearInline.addEventListener('click', async function () {
-      if (!confirm('确定清空沟通页候选人池吗？已有的评估结果不会被删。')) return;
+      if (!confirm('确定清空沟通页候选人列表吗？已有的评估结果不会被删。')) return;
       try {
         const res = await chrome.runtime.sendMessage({ type: 'CLEAR_SAYHI_POOL' });
         if (res && res.ok) {
-          showToast('✅ 池子已清空（清掉 ' + (res.cleared || 0) + ' 人）');
+          showToast('✅ 列表已清空（清掉 ' + (res.cleared || 0) + ' 人）');
         } else {
           showToast('清空失败：' + ((res && res.error) || '未知错误'), 'error');
         }

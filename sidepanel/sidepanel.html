@@ -549,6 +549,10 @@
       border: 1px solid #d0d7de;
       border-radius: 3px;
     }
+    /* v1.0.1：沟通页浏览数 input 加宽容纳「全部」placeholder + datalist 按钮 */
+    .loop-goal input#sayhi-loop-goal-k {
+      width: 100px;
+    }
     .loop-goal input:disabled {
       background: #f0f0f0;
       color: #888;
@@ -867,7 +871,10 @@
   <div class="section">
     <div class="section-title">
       <span>候选人评估 <span id="eval-count" style="color:#888;font-weight:400;">(0)</span></span>
-      <span class="jd-title" id="jd-title">JD: 加载中…</span>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <span class="jd-title" id="jd-title">JD: 加载中…</span>
+        <button id="btn-clear-evaluations-inline" class="danger" style="font-size:11px;padding:3px 10px;cursor:pointer;" title="清空当前候选人列表（已写入看板的判定结果不受影响）">清空列表</button>
+      </span>
     </div>
     <div id="evaluations" class="eval-list">
       <div class="empty">尚未评估到候选人 — 选 JD + 点「开始本轮」后会自动评估</div>
@@ -894,10 +901,10 @@
         <span id="auto-action-badge" style="display:none;font-size:11px;color:#00b572;white-space:nowrap;" title="admin 已开启批量评估自动求简历。批量评估时所有「符合」的候选人会自动走 输入话术 → 求简历。单评始终需要 HR 手动点 🎯">🎯 批量自动 ON</span>
       </div>
 
-      <!-- v1.0.0：默认无上限（评估全部）；点击 input 弹预设值快速选择，也可键入数字 -->
+      <!-- v1.0.2：label 改回「浏览数」(2 字短名，跟 placeholder 区分)；placeholder 保留「全部」表达默认无上限 -->
       <div class="control-row loop-goal-row">
-        <label class="loop-goal">浏览人数
-          <input id="sayhi-loop-goal-k" type="number" min="1" list="sayhi-loop-goal-k-presets" placeholder="无上限（评估全部）" title="本批最多评估几人。默认留空 = 评估全部未读；点击可选预设值或自己输入。">
+        <label class="loop-goal">浏览数
+          <input id="sayhi-loop-goal-k" type="number" min="1" list="sayhi-loop-goal-k-presets" placeholder="全部" title="本批最多评估几人。默认留空 = 评估全部未读；点击可选预设值或自己输入数字。">
           <datalist id="sayhi-loop-goal-k-presets">
             <option value="5">
             <option value="10">
@@ -946,7 +953,7 @@
         <div>📥 候选人池 <span class="pool-count" id="sayhi-pool-count-2">0</span> 人
           <span id="sayhi-pool-stale-hint" class="pool-stale" style="margin-left:8px;display:none;">· 池子可能陈旧，建议重新扫描</span>
         </div>
-        <button id="btn-sayhi-clear-pool-inline" class="danger" style="font-size:11px;padding:3px 10px;cursor:pointer;" title="清空当前候选人池（评估记录不受影响）">清空池子</button>
+        <button id="btn-sayhi-clear-pool-inline" class="danger" style="font-size:11px;padding:3px 10px;cursor:pointer;" title="清空当前候选人列表（评估结果不受影响）">清空列表</button>
       </div>
       <div style="margin-top:4px;font-size:11px;color:#888;">
         切到 BOSS「沟通」tab 后点扫描；评估超过 30 分钟会自动重评

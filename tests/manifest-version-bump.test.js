@@ -9,8 +9,8 @@ const test = require('node:test');
 const ROOT = path.resolve(__dirname, '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
 
-test('manifest.json version === 1.0.0', () => {
-  assert.equal(manifest.version, '1.0.0');
+test('manifest.json version === 1.0.2', () => {
+  assert.equal(manifest.version, '1.0.2');
 });
 
 test('manifest.json name === BOSS Sniffer（v0.20.11 简化，去掉「· 沟通页完整版」副标题）', () => {
