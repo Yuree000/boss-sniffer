@@ -102,6 +102,8 @@
     /* 状态：pending 灰 / failed 暗红 */
     .eval-card.pending { border-left-color: #aaa; background: #fafafa; }
     .eval-card.failed { border-left-color: #d9534f; background: #fff5f5; }
+    /* v0.21.0 · Phase 1·1d：unrouted = 未识别沟通职位（已跳过 LLM 评估） */
+    .eval-card.unrouted { border-left-color: #e6b800; background: #fffbe6; }
 
     /* 决策标签 + sayHi 内联 + 展开箭头（同行右侧） */
     .decision-block {
@@ -245,6 +247,31 @@
       50% { opacity: 0.65; }
     }
     .decision.failed { color: #fff; background: #d9534f; }
+    /* v0.21.0 · Phase 1·1d：unrouted 决策标 = 黄底 */
+    .decision.unrouted { color: #7a4f0f; background: #fff7e6; }
+
+    /* v0.21.0 · Phase 1·1d：每张沟通页卡片的"沟通职位 → 路由 JD"小字头 */
+    .routing-header {
+      font-size: 11px;
+      color: #888;
+      margin-top: 3px;
+      line-height: 1.4;
+    }
+    .routing-header.unrouted {
+      color: #7a4f0f;
+      background: #fffbe6;
+      padding: 2px 6px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+    .routing-header.matched .arrow {
+      color: #bbb;
+      margin: 0 2px;
+    }
+    .routing-header .jd-routed {
+      color: #2a6f49;
+      font-weight: 500;
+    }
 
     .meta {
       color: #888;
@@ -731,12 +758,22 @@
     }
     .sayhi-empty strong { color: #555; }
 
+    /* v0.24.4：删 v0.23.0 待标不合适 30s 撤销队列 CSS（设计回退） */
+
   </style>
 </head>
 <body>
-  <h2>
-    BOSS Sniffer
-    <span><span class="tag" id="version-tag" title="三连点导出诊断包">v?.?.?</span> <span class="status-pill idle" id="status-pill">待机</span></span>
+  <!-- v0.25.0：顶部按钮三件套同一行（看板 / 设置 从 footer 迁移过来） -->
+  <h2 style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+    <span style="display:flex;align-items:center;gap:8px;">
+      BOSS Sniffer
+      <span class="tag" id="version-tag" title="三连点导出诊断包">v?.?.?</span>
+      <span class="status-pill idle" id="status-pill">待机</span>
+    </span>
+    <span style="display:flex;gap:6px;">
+      <button id="btn-dashboard" style="font-size:11px;padding:3px 8px;cursor:pointer;">📊 看板</button>
+      <button id="btn-options" style="font-size:11px;padding:3px 8px;cursor:pointer;">⚙️ 设置</button>
+    </span>
   </h2>
 
   <!-- v0.13.0：顶部 tab 切换 -->
@@ -840,36 +877,54 @@
   </div>
   <!-- ===== /推荐页 pane ===== -->
 
-  <!-- ===== 沟通页 pane（v0.13.0 新增） ===== -->
+  <!-- ===== 沟通页 pane（v0.13.0 新增；v0.22.0 · Phase 2·2a 重构 control-bar） ===== -->
   <div class="page-pane" data-page-pane="sayhi" hidden>
+    <!-- v0.21.0 · 1d：删掉了原"JD: xxx"全局标签 —— Phase 1 多岗位路由后每候选人各自走自己的 JD，
+         全局 JD 字段在沟通页失去意义。 -->
     <div class="section-title" style="margin-bottom:10px;">
       <span>新招呼候选人 <span id="sayhi-pool-count" style="color:#888;font-weight:400;">(0)</span></span>
-      <span class="jd-title" id="sayhi-jd-title">JD: 加载中…</span>
     </div>
 
-    <!-- v0.17.1.0：当前话术下拉（评估「符合」自动求简历时用） -->
-    <div class="control-row" style="margin-bottom:8px;display:flex;align-items:center;gap:8px;font-size:12px;">
-      <label for="greet-current" style="white-space:nowrap;">当前话术</label>
-      <select id="greet-current" style="flex:1;font-size:12px;padding:3px 6px;">
-        <option value="">— 加载中 —</option>
-      </select>
-      <span id="auto-action-badge" style="display:none;font-size:11px;color:#00b572;white-space:nowrap;" title="admin 已开启批量评估自动求简历。批量评估时所有「符合」的候选人会自动走 输入话术 → 求简历。单评始终需要 HR 手动点 🎯">🎯 批量自动 ON</span>
-    </div>
-
-    <div class="sayhi-pool-bar" id="sayhi-pool-bar">
-      <div>📥 候选人池 <span class="pool-count" id="sayhi-pool-count-2">0</span> 人
-        <span id="sayhi-pool-stale-hint" class="pool-stale" style="margin-left:8px;display:none;">· 池子可能陈旧，建议重新扫描</span>
+    <!-- v0.22.0 · Phase 2·2a：control-bar 仿推荐页骨架。
+         元素接入分子步骤：2b 接入开始/停止按钮；2c 接入 checkbox；2d 接入阈值 N/K 到 evalSayhiCore。
+         2a 阶段新增元素全部 disabled + tooltip 说明子步骤；现有 sayhi-actions 保留在 pool-bar 下面，2d 才迁移。 -->
+    <div class="control-bar">
+      <div class="control-row">
+        <!-- v0.25.0：删「当前话术」下拉 -->
+        <span id="auto-action-badge" style="display:none;font-size:11px;color:#00b572;white-space:nowrap;" title="admin 已开启批量评估自动求简历。批量评估时所有「符合」的候选人会自动走 输入话术 → 求简历。单评始终需要 HR 手动点 🎯">🎯 批量自动 ON</span>
       </div>
-      <div style="margin-top:4px;font-size:11px;color:#888;">
-        切到 BOSS「沟通」tab 后点扫描；评估超过 30 分钟会自动重评
+
+      <!-- v1.0.0：默认无上限（评估全部）；点击 input 弹预设值快速选择，也可键入数字 -->
+      <div class="control-row loop-goal-row">
+        <label class="loop-goal">浏览人数
+          <input id="sayhi-loop-goal-k" type="number" min="1" list="sayhi-loop-goal-k-presets" placeholder="无上限（评估全部）" title="本批最多评估几人。默认留空 = 评估全部未读；点击可选预设值或自己输入。">
+          <datalist id="sayhi-loop-goal-k-presets">
+            <option value="5">
+            <option value="10">
+            <option value="15">
+            <option value="20">
+            <option value="30">
+            <option value="50">
+          </datalist>
+        </label>
+      </div>
+
+      <div class="control-row">
+        <button id="btn-sayhi-start" class="btn-start" title="内部串行执行扫描本页 + 一键评估（统一入口）。旧的「🔍 扫描」+「⚡ 一键评估」按钮仍在下方可用，2d 后会迁移到「🧪 测试模式」折叠区。">▶ 开始处理本批</button>
+        <button id="btn-sayhi-stop-batch" class="btn-stop" disabled title="停止本批评估（已发起的 LLM 调用会跑完，未发起的跳过）">■ 停止</button>
+      </div>
+
+      <div class="sayhi-toggle-row">
+        <input type="checkbox" id="sayhi-auto-greet-toggle" title="评估为「符合」时自动输入话术 + 求简历。默认关闭。仅对路由命中 JD 的候选人生效。">
+        <label for="sayhi-auto-greet-toggle">自动发送话术 + 求简历（评估「符合」时）</label>
+      </div>
+      <div class="sayhi-toggle-row">
+        <input type="checkbox" id="sayhi-auto-mark-unsuitable-toggle" title="⚠ Phase 2 阶段：勾选只存配置，不实际执行（防止 P3 撤销窗口落地前的不可逆事故）。Phase 3·3c 加 30s 撤销窗口后才接入真实执行。">
+        <label for="sayhi-auto-mark-unsuitable-toggle">自动标不合适（评估「pass」时）</label>
       </div>
     </div>
 
-    <div class="sayhi-actions">
-      <button id="btn-sayhi-scan" class="primary">🔍 扫描本页候选人</button>
-      <button id="btn-sayhi-eval" disabled>⚡ 一键评估</button>
-      <button id="btn-sayhi-stop" class="danger" style="display:none;">■ 停止</button>
-    </div>
+    <!-- v0.24.4：删 30s 撤销窗口 + 24h 复盘段（设计回退，pass 立即点不合适） -->
 
     <div class="sayhi-progress" id="sayhi-progress">
       <div id="sayhi-progress-text">评估中 0 / 0</div>
@@ -880,33 +935,61 @@
       <div class="sayhi-empty">
         <strong>开始评估「新招呼」候选人</strong><br>
         1. 在 BOSS 直聘切到「沟通」→「新招呼」tab<br>
-        2. 回这里点 <em>🔍 扫描本页候选人</em>，扫到的人进池<br>
-        3. 点 <em>⚡ 一键评估</em>，LLM 跑完后这里出符合 / pass 结果
+        2. 回这里在 control-bar 点 <em>▶ 开始处理本批</em>，扫描 + 评估一气呵成<br>
+        3. LLM 跑完后这里出符合 / pass 结果
       </div>
     </div>
 
-    <!-- v0.14.0-pre：一键操作调试日志（操作链路稳定后可考虑隐藏或精简） -->
-    <details id="sayhi-debug-details" style="margin-top:10px;">
-      <summary style="cursor:pointer;font-size:11px;color:#888;user-select:none;">
-        🐛 操作调试日志 <span id="sayhi-debug-count" style="color:#666;">(0)</span>
-        <button id="btn-sayhi-debug-clear" style="margin-left:8px;font-size:10px;padding:1px 6px;cursor:pointer;">清空</button>
-      </summary>
-      <div id="sayhi-debug-log" style="font-family:Consolas,monospace;font-size:10px;line-height:1.5;max-height:240px;overflow-y:auto;background:#fafafa;padding:6px;border:1px solid #eee;margin-top:4px;border-radius:3px;"></div>
-    </details>
-
-    <div style="margin-top:8px;text-align:right;">
-      <button id="btn-sayhi-clear-pool" class="danger">清空池子</button>
+    <!-- v0.25.0：候选人池卡片下移到候选人列表下方 + 集成「清空池子」按钮 -->
+    <div class="sayhi-pool-bar" id="sayhi-pool-bar" style="margin-top:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>📥 候选人池 <span class="pool-count" id="sayhi-pool-count-2">0</span> 人
+          <span id="sayhi-pool-stale-hint" class="pool-stale" style="margin-left:8px;display:none;">· 池子可能陈旧，建议重新扫描</span>
+        </div>
+        <button id="btn-sayhi-clear-pool-inline" class="danger" style="font-size:11px;padding:3px 10px;cursor:pointer;" title="清空当前候选人池（评估记录不受影响）">清空池子</button>
+      </div>
+      <div style="margin-top:4px;font-size:11px;color:#888;">
+        切到 BOSS「沟通」tab 后点扫描；评估超过 30 分钟会自动重评
+      </div>
     </div>
+
+    <!-- v0.22.3 · Phase 2·2d：测试模式折叠区（spec §5.3）。
+         旧 sayhi-actions（scan/eval/stop）、清空池子按钮、操作调试日志 视觉分组到此处。
+         功能 100% 保留：是开发期 + bug 排查时的兜底通道，HR 想用时展开即可。
+         spec §5.4 触发条件（Phase 3 完成 + 真机 ≥ 2 周 0 事故）满足后才会删整段。 -->
+    <details id="sayhi-test-mode-details" style="margin-top:10px;border:1px dashed #d0d7de;border-radius:6px;padding:6px 8px;">
+      <summary style="cursor:pointer;font-size:11px;color:#666;user-select:none;font-weight:500;">
+        🧪 测试模式
+      </summary>
+      <div style="margin-top:8px;font-size:11px;color:#888;line-height:1.5;">
+        旧分步按钮 + 操作调试日志。主流程已合并到上方「▶ 开始处理本批」单按钮；这里保留给 bug 排查 / 单步验证。
+      </div>
+
+      <!-- 测试通道 B（spec §5.1b）：分步 scan / eval / stop 按钮 -->
+      <div class="sayhi-actions" style="margin-top:8px;">
+        <button id="btn-sayhi-scan" class="primary">🔍 扫描本页候选人</button>
+        <button id="btn-sayhi-eval" disabled>⚡ 一键评估</button>
+        <button id="btn-sayhi-stop" class="danger" style="display:none;">■ 停止</button>
+      </div>
+
+      <!-- v0.14.0-pre：一键操作调试日志（操作链路稳定后可考虑隐藏或精简） -->
+      <details id="sayhi-debug-details" style="margin-top:8px;">
+        <summary style="cursor:pointer;font-size:11px;color:#888;user-select:none;">
+          🐛 操作调试日志 <span id="sayhi-debug-count" style="color:#666;">(0)</span>
+          <button id="btn-sayhi-debug-clear" style="margin-left:8px;font-size:10px;padding:1px 6px;cursor:pointer;">清空</button>
+        </summary>
+        <div id="sayhi-debug-log" style="font-family:Consolas,monospace;font-size:10px;line-height:1.5;max-height:240px;overflow-y:auto;background:#fafafa;padding:6px;border:1px solid #eee;margin-top:4px;border-radius:3px;"></div>
+      </details>
+
+      <div style="margin-top:8px;text-align:right;">
+        <button id="btn-sayhi-clear-pool" class="danger">清空池子</button>
+      </div>
+    </details>
   </div>
   <!-- ===== /沟通页 pane ===== -->
 
-  <!-- 操作按钮（footer 共用） -->
-  <div class="footer">
-    <span>
-      <button id="btn-dashboard">📊 看板</button>
-      <button id="btn-options">⚙️ 设置</button>
-    </span>
-  </div>
+  <!-- v0.25.0：footer 已空（看板/设置按钮迁移到顶部 h2 同一行） -->
+
 
   <script src="../lib/city-codes.js"></script>
   <!-- v0.17.0 storage 重构：jd-templates 依赖 BossStorageSync，必须先加载 -->

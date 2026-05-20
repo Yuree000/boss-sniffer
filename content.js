@@ -116,6 +116,27 @@ window.addEventListener('message', function (event) {
         waitedMs: msg.waitedMs || null
       });
     }
+  } else if (msg.kind === 'real-click-request') {
+    // v0.24.7：inject.js 请求 chrome.debugger 真点击（isTrusted=true）
+    // inject → content → BG → debugger 真点击 → BG response → content → inject
+    const requestId = msg.requestId || '';
+    chrome.runtime.sendMessage({
+      type: 'REAL_CLICK_AT_COORDS',
+      x: msg.x,
+      y: msg.y
+    }, function (resp) {
+      const ok = !!(resp && resp.ok);
+      const errMsg = (resp && resp.error)
+        || (chrome.runtime.lastError && chrome.runtime.lastError.message)
+        || (ok ? null : 'no-response');
+      window.postMessage({
+        __bossSniffer: true,
+        kind: 'real-click-result',
+        requestId: requestId,
+        ok: ok,
+        error: errMsg
+      }, '*');
+    });
   }
 });
 

@@ -234,13 +234,12 @@
     const content = $('view-funnel-content');
     if (!content) return;
 
-    if (isChatScenario()) {
-      // v0.20.3 沟通页占位（与 4.C/D/E 统一）
-      content.innerHTML = CHAT_PLACEHOLDER_HTML;
-      return;
-    }
+    // v0.23.0 · Phase 3·3d：移除沟通页 tab 占位，events 真数据流入后自动渲染
+    // v0.24.1：撤销沟通页 tab L3 engaged + L4 resume_received 两行渲染
+    //   原因：HR 反馈 chat history role 识别 + resume card 抓取实际未稳定流入
+    //   events 表，UI 显示 0 反而误导。emit 代码（background.js mergeChatHistory
+    //   /mergeResumeCards）保留，未来抓取改进可重新启用 UI。
 
-    // 推荐页 tab：实数据
     const bounds = currentBounds();
     const opts = { scenario: currentScenario(), jobId: currentJobId, timeStart: bounds.start, timeEnd: bounds.end };
     const pool = filterEvents(allEventsCache, Object.assign({}, opts, { stage: 'candidate_pool' })).length;
@@ -248,10 +247,13 @@
     const sayhi = filterEvents(allEventsCache, Object.assign({}, opts, { stage: 'sayhi_sent' })).length;
 
     if (pool === 0 && matched === 0 && sayhi === 0) {
+      const hint = isChatScenario()
+        ? '切到 BOSS 沟通页跑评估 / 等候选人回复'
+        : '切到 BOSS 推荐页点 sidepanel「开始本轮」';
       content.innerHTML =
         '<div class="funnel-placeholder">' +
-          currentScopeLabel() + '推荐页未跑' +
-          '<div class="placeholder-hint">切到 BOSS 推荐页点 sidepanel「开始本轮」</div>' +
+          currentScopeLabel() + (isChatScenario() ? '沟通页未跑' : '推荐页未跑') +
+          '<div class="placeholder-hint">' + hint + '</div>' +
         '</div>';
       return;
     }
@@ -259,13 +261,13 @@
     const matchRate = safePercent(matched, pool);
     // v0.20.3：删触达率（符合 → 自动招呼）级间转化
 
-    content.innerHTML =
-      '<div class="funnel">' +
-        funnelRow('已判断候选人数', pool, 100) +
-        funnelRate('↓ 符合率 ' + matchRate + '%') +
-        funnelRow('符合数', matched, pool ? safePercent(matched, pool) : 0, 'match') +
-        funnelRow('自动招呼发出', sayhi, pool ? safePercent(sayhi, pool) : 0, 'sayhi') +
-      '</div>';
+    // v0.24.1：删 L3 engaged + L4 resume_received 渲染（emit 代码保留）
+    const rowsHtml =
+      funnelRow('已判断候选人数', pool, 100) +
+      funnelRate('↓ 符合率 ' + matchRate + '%') +
+      funnelRow('符合数', matched, pool ? safePercent(matched, pool) : 0, 'match') +
+      funnelRow('自动招呼发出', sayhi, pool ? safePercent(sayhi, pool) : 0, 'sayhi');
+    content.innerHTML = '<div class="funnel">' + rowsHtml + '</div>';
 
     // 数字点击 → 滚到 4.E 候选人记录 + 临时 filter
     const matchNum = content.querySelector('.funnel-num[data-stage="match"]');
@@ -299,8 +301,8 @@
   // v0.20.3：按 currentBounds() 切片（不再固定今日）
 
   function renderViewJD() {
-    // v0.20.4：沟通页主链路未完工 → 整卡占位（与 4.B 沟通页 tab 行为一致）
-    if (isChatScenario()) {
+    // v0.23.0 · 3d：占位移除，沟通页 events 流入后 4.C 自动按 scenario 过滤渲染
+    if (false) {
       $('view-jd-content').innerHTML = CHAT_PLACEHOLDER_HTML;
       return;
     }
@@ -445,8 +447,8 @@
     }
     if (titleEl) titleEl.textContent = titleText;
 
-    // v0.20.4：沟通页主链路未完工 → 整卡占位
-    if (isChatScenario()) {
+    // v0.23.0 · 3d：占位移除，沟通页 events 流入后 4.D 自动按 scenario 过滤渲染
+    if (false) {
       $('view-trend-content').innerHTML = CHAT_PLACEHOLDER_HTML;
       return;
     }
@@ -582,8 +584,8 @@
       });
     }
 
-    // v0.20.4：沟通页主链路未完工 → 整卡占位
-    if (isChatScenario()) {
+    // v0.23.0 · 3d：占位移除，沟通页评估数据流入 evaluations 表后 4.E 自动渲染
+    if (false) {
       if (meta) { meta.textContent = '沟通页·待主链路完工'; meta.style.cursor = 'default'; meta.onclick = null; }
       $('view-drawer-content').innerHTML = CHAT_PLACEHOLDER_HTML;
       return;

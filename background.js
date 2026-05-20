@@ -9,14 +9,16 @@
 
 // v0.15.5：city-codes 必须在 extractor 之前加载（extractor.lookupRegionCode 间接依赖）
 // v0.17.0：captures-cleaner 负责 captures 7 天 TTL；storage-sync 必须在 jd-templates 之前加载
-importScripts('lib/city-codes.js', 'lib/extractor.js', 'lib/llm-client.js', 'lib/judge.js', 'lib/sayHi.js', 'lib/events.js', 'lib/storage-sync.js', 'lib/jd-templates.js', 'lib/greet-templates.js', 'lib/prompt-builder.js', 'lib/scheduler.js', 'lib/captures-cleaner.js', 'lib/diag-log.js');
+// v0.21.0 · Phase 1·1c：jd-router 不依赖其他 lib，位置不敏感，放在 jd-templates 之后保持语义近邻
+importScripts('lib/city-codes.js', 'lib/extractor.js', 'lib/llm-client.js', 'lib/judge.js', 'lib/sayHi.js', 'lib/events.js', 'lib/storage-sync.js', 'lib/jd-templates.js', 'lib/jd-router.js', 'lib/greet-templates.js', 'lib/prompt-builder.js', 'lib/scheduler.js', 'lib/captures-cleaner.js', 'lib/diag-log.js');
 
 const DB_NAME = 'boss-sniffer-db';
-const DB_VERSION = 6;  // v6 (observability v1): 新增 diag_logs store
+const DB_VERSION = 8;  // v8 (v0.24.4): 删 dismissed_candidates store（30s 撤销窗口设计回退，pass 立即点不合适）
 const STORE_CAPTURES = 'captures';
 const STORE_EVALUATIONS = 'evaluations';
 const STORE_EVENTS = 'events';
 const STORE_SAYHI_POOL = 'sayhi_pool';  // v0.13.0：沟通页 DOM 扫描的候选人池（独立于推荐页 evaluations）
+const STORE_DISMISSED_CANDIDATES = 'dismissed_candidates';  // v0.22.5 · Phase 3·3c 创建；v0.24.4 已删除（保留常量供 onupgradeneeded 升级用）
 const STORE_FSA_STATE = 'fsa_state';
 const STORE_PENDING_FSA_WRITES = 'pending_fsa_writes';
 const STORE_DIAG_LOGS = 'diag_logs';    // observability v1：诊断日志环形 buffer
@@ -140,10 +142,20 @@ let appConfig = {
   // v0.17.1.3：产品边界澄清——「单评 = HR 看个体看仔细，永不自动」；「批量 = 自动入口」
   //   旧版 key（单评启用）直接忽略（语义已变，不迁移），HR 重新去 admin 勾选 enabledBatchEval
   autoAction: {
-    enabledBatchEval: false,     // 批量评估启用（单评永不自动求简历，HR 评后手动点 🎯）
+    enabledBatchEval: false,     // 批量评估启用 自动「话术+求简历」（单评永不自动求简历，HR 评后手动点 🎯）
+                                 // 别名语义：等同于 "autoGreet"。v0.22.2 · Phase 2·2c 起 sidepanel 也能控制此 flag。
+    autoMarkUnsuitable: false,   // v0.22.2 · Phase 2·2c 新增：批量评估「pass」时自动点不合适。
+                                 // ⚠ Phase 2 阶段仅存配置，evalSayhiCore 不读取（防止 P3 撤销窗口落地前触发不可逆操作）。
+                                 // Phase 3·3c 加 30s 撤销窗口后才接入实际执行。
     dryRun: false,               // 试跑模式：执行链路走完所有定位 + log，但不点最后的发送/确定
     actionCooldownMinMs: 2000,   // 自动操作模式专属冷却下限（chain 自身已耗 13-25s，不叠加 5-8s 否则太慢）
     actionCooldownMaxMs: 4000    // 上限
+  },
+  // v0.22.3 · Phase 2·2d：沟通页批次阈值（spec §3.2.3）
+  //   K（maxBrowseK）= 本批最多评估几人，截断 todo（null = 留空 = 全部未读）
+  // v0.25.0：删招呼数 cap 字段（概念彻底废弃）
+  sayhiBatch: {
+    maxBrowseK: null
   }
 };
 
@@ -224,6 +236,12 @@ function openDB() {
           autoIncrement: true
         });
         dlStore.createIndex('ts', 'ts', { unique: false });
+      }
+      // v8 (v0.24.4)：删 dismissed_candidates store（30s 撤销窗口设计回退）
+      //   v7 时创建过此 store；v8 升级时如存在则删除，回收空间
+      //   未来如果重新启用撤销窗口，需要升 v9 并重建 store
+      if (db.objectStoreNames.contains(STORE_DISMISSED_CANDIDATES)) {
+        db.deleteObjectStore(STORE_DISMISSED_CANDIDATES);
       }
     };
     req.onsuccess = function () { resolve(req.result); };
@@ -526,12 +544,32 @@ async function getCurrentJdTemplate() {
 }
 
 // v0.17.1.0：取当前话术模板（评估「符合」→ 自动求简历时拿话术正文）
-// 找不到当前 / 模块未加载 → fallback 到 SEED_GENERIC；都没有则返回 null
-async function getCurrentGreetTemplate() {
-  if (!self.BossGreetTemplates) {
-    console.warn('[BOSS-Sniffer] BossGreetTemplates 未加载，无话术模板可用');
+// v0.25.2 重构：话术从独立模板 → JD 内嵌（greetTemplates 数组 + defaultGreetTemplateId）
+//   新签名 getJdDefaultGreetTemplate(jd) — 接收 JD 对象，返回它的默认话术
+//   JD 没配话术 / 默认话术 ID 无效 → 返回 null（autoGreet 走 no-greet-template 跳过）
+function getJdDefaultGreetTemplate(jd) {
+  if (!jd || !Array.isArray(jd.greetTemplates) || !jd.greetTemplates.length) {
     return null;
   }
+  // 优先用 defaultGreetTemplateId 指定的话术
+  if (jd.defaultGreetTemplateId) {
+    const defaultTpl = jd.greetTemplates.find(function (g) {
+      return g && g.id === jd.defaultGreetTemplateId;
+    });
+    if (defaultTpl && defaultTpl.text) return defaultTpl;
+  }
+  // fallback：取第一个有效话术
+  for (let i = 0; i < jd.greetTemplates.length; i++) {
+    const g = jd.greetTemplates[i];
+    if (g && g.text) return g;
+  }
+  return null;
+}
+
+// v0.17.1.0 → v0.25.2 deprecated：getCurrentGreetTemplate 仍保留兼容（手动点 🎯 路径用）
+// 后续可能彻底删（手动按钮已 v0.25.1 隐藏）。当前仍有 sendMessage handler / 手动路径残留调用。
+async function getCurrentGreetTemplate() {
+  if (!self.BossGreetTemplates) return null;
   try {
     await self.BossGreetTemplates.ensureSeeded();
     const curId = await self.BossGreetTemplates.getCurrentGreetId();
@@ -539,11 +577,9 @@ async function getCurrentGreetTemplate() {
     if (!tpl) {
       const list = await self.BossGreetTemplates.listTemplates();
       tpl = (list && list[0]) || self.BossGreetTemplates.SEED_GENERIC;
-      console.warn('[BOSS-Sniffer] 未选中话术或当前话术已删，fallback 到：' + (tpl && tpl.name));
     }
     return tpl;
   } catch (e) {
-    console.error('[BOSS-Sniffer] 取当前话术失败：', e);
     return self.BossGreetTemplates && self.BossGreetTemplates.SEED_GENERIC;
   }
 }
@@ -768,7 +804,12 @@ async function retryEvaluation(candidateId) {
   await upsertEvaluation(Object.assign({}, existing, {
     evaluation: { status: 'pending', startedAt: Date.now() }
   }));
-  const jd = await getCurrentJdTemplate();  // S4b：用当前选中的 JD（不是创建时的）
+  // S4b：用当前选中的 JD（不是创建时的）
+  // TODO v0.21.x：retry 路径未接入沟通页 JD 路由（Phase 1·1c 仅改了 evalSayhiCore）。
+  // 沟通页 sayhi-tab 候选人按 retry 仍会用 currentJD，与 1c 路由不一致。
+  // 待 Phase 1 整体上线后单独追加补丁：检测 existing.candidate.source.scenario === 'sayhi-tab'
+  // 则调用 BossJDRouter.route 找路由命中的 JD。
+  const jd = await getCurrentJdTemplate();
   const llmCfg = getCurrentLlmConfig();
   let evaluation;
   try {
@@ -844,6 +885,51 @@ async function buildDiagBundle() {
     },
     recentEvaluations: recentEvaluations,
     diagLogs: diagLogs
+  };
+}
+
+// v0.22.5 · Phase 3·3c 前置：全 store IDB 备份（HR 在 schema 升级前可选导出 JSON 作回滚兜底）
+//   设计：纯读快照，不修改 IDB；输出大对象由 admin 端 Blob 下载（与 diag bundle 同模式）
+//   字段：exportedAt / extensionVersion / dbVersion / stores: { name: [...rows] }
+async function buildIdbBackupBundle() {
+  const STORES_TO_BACKUP = [
+    STORE_CAPTURES,
+    STORE_EVALUATIONS,
+    STORE_EVENTS,
+    STORE_SAYHI_POOL,
+    STORE_DIAG_LOGS,
+    // v0.24.4：dismissed_candidates store v8 起已删（30s 撤销窗口设计回退）
+    'fsa_state',
+    'pending_fsa_writes'
+  ];
+  const db = await openDB();
+  const stores = {};
+  await Promise.all(STORES_TO_BACKUP.map(function (name) {
+    return new Promise(function (resolve) {
+      try {
+        if (!db.objectStoreNames.contains(name)) {
+          stores[name] = [];
+          resolve();
+          return;
+        }
+        const tx = db.transaction(name, 'readonly');
+        const req = tx.objectStore(name).getAll();
+        req.onsuccess = function () { stores[name] = req.result || []; resolve(); };
+        req.onerror = function () { stores[name] = []; resolve(); };
+      } catch (e) {
+        // store 不存在或 tx 失败 → 写空数组，不阻断备份
+        stores[name] = [];
+        resolve();
+      }
+    });
+  }));
+  return {
+    exportedAt: new Date().toISOString(),
+    extensionVersion: chrome.runtime.getManifest().version,
+    dbName: DB_NAME,
+    dbVersion: DB_VERSION,
+    stores: stores,
+    counts: Object.keys(stores).reduce(function (acc, k) { acc[k] = stores[k].length; return acc; }, {})
   };
 }
 
@@ -935,6 +1021,11 @@ async function clearSayhiPool() {
     tx.oncomplete = resolve;
   });
 }
+
+// v0.24.4：删 v0.23.0 · Phase 3·3c「自动标不合适 30s 撤销窗口 CRUD」整段
+//   设计回退：pass 候选人立即点不合适（HR 勾 checkbox 表达意图 = 信任 LLM，不需二次确认）
+//   保留 STORE_DISMISSED_CANDIDATES 常量供 onupgradeneeded 升级使用（v7→v8 删 store）
+//   未来如重新启用撤销窗口，从 git history 恢复 5 个 helpers + alarms + handler
 
 // v0.17.0.10 POC A7 回灌：把 DOM 详情面板扫描结果合并到沟通页池子记录
 // 只更新 bossSignals.domDetail 字段，不动其他字段（与 v0.13.3 mergeCandidatesIntoSayhiPool 互补）
@@ -1074,6 +1165,34 @@ async function mergeChatHistoryFromHistoryMsg(payload) {
     await appendChatHistoryToSayhiPool(matched.uid, enriched, parsed.lastMessageAt);
     console.info('[BOSS-Sniffer chatHistory] 合并 ' + enriched.length + ' 条消息到 sayhi_pool[' + matched.uid + ']');
   }
+
+  // v0.23.0 · Phase 3·3d：L3 engaged 事件埋点（候选人首次回复 HR）
+  //   触发条件：enriched 中有 role==='candidate' 消息；防重复 emit 用 hasRecentEvent
+  //   payload 含首条候选人消息时间戳便于后续看板做"首次回复延迟"分析
+  try {
+    const candidateMsg = enriched.find(function (m) { return m && m.role === 'candidate'; });
+    if (candidateMsg && self.BossEvents && typeof self.BossEvents.hasRecentEvent === 'function') {
+      const already = await self.BossEvents.hasRecentEvent(matched.uid, 'engaged', 30 * 24 * 60 * 60 * 1000);
+      if (!already) {
+        const jobId = (evMatch && evMatch.record && evMatch.record.evaluation && evMatch.record.evaluation.jdId)
+                    || (poolMatch && poolMatch.record && poolMatch.record.source && poolMatch.record.source.jobId)
+                    || '';
+        await self.BossEvents.logEvent({
+          stage: 'engaged',
+          candidateId: matched.uid,
+          scenario: 'chat',
+          jobId: jobId,
+          payload: {
+            engagedAt: Date.now(),
+            firstReplyAt: candidateMsg.time || candidateMsg.ts || Date.now()
+          }
+        });
+        if (self.BossDiag) self.BossDiag.log('info', 'funnel.engaged', '候选人首次回复', { candidateId: matched.uid });
+      }
+    }
+  } catch (err) {
+    if (self.BossDiag) self.BossDiag.log('warn', 'funnel.engaged', 'engaged emit 失败', { error: err && err.message });
+  }
 }
 
 // v0.17.0.9 POC A6 回灌:把 BOSS 推的简历卡片(historyMsg messages[].body.resume)
@@ -1093,6 +1212,33 @@ async function mergeResumeCardsToStore(cards) {
       await appendResumeCardToEvaluation(card.candidateId, card);
     } else {
       await appendResumeCardToSayhiPool(card.candidateId, card);
+    }
+
+    // v0.23.0 · Phase 3·3d：L4 resume_received 事件埋点（首次拿到候选人简历）
+    //   防重复：hasRecentEvent（同候选人 30 天内不重复 emit）
+    try {
+      if (self.BossEvents && typeof self.BossEvents.hasRecentEvent === 'function') {
+        const already = await self.BossEvents.hasRecentEvent(card.candidateId, 'resume_received', 30 * 24 * 60 * 60 * 1000);
+        if (!already) {
+          const jobId = (evMatch && evMatch.record && evMatch.record.evaluation && evMatch.record.evaluation.jdId)
+                      || (poolMatch && poolMatch.record && poolMatch.record.source && poolMatch.record.source.jobId)
+                      || '';
+          await self.BossEvents.logEvent({
+            stage: 'resume_received',
+            candidateId: card.candidateId,
+            scenario: 'chat',
+            jobId: jobId,
+            payload: {
+              resumeReceivedAt: Date.now(),
+              applyStatus: card.applyStatus || '',
+              position: card.position || ''
+            }
+          });
+          if (self.BossDiag) self.BossDiag.log('info', 'funnel.resume_received', '首次拿到简历', { candidateId: card.candidateId });
+        }
+      }
+    } catch (err) {
+      if (self.BossDiag) self.BossDiag.log('warn', 'funnel.resume_received', 'resume_received emit 失败', { error: err && err.message });
     }
   }
 }
@@ -1340,7 +1486,7 @@ async function evalSayhiCore(targetCandidateIds, opts) {
   for (let i = 0; i < allEvals.length; i++) evalMap[allEvals[i].candidateId] = allEvals[i];
 
   const staleCutoff = Date.now() - SAYHI_EVAL_STALE_MS;
-  const todo = pool.filter(function (c) {
+  let todo = pool.filter(function (c) {
     if (force) return true;
     const e = evalMap[c.candidateId];
     if (!e || !e.evaluation) return true;
@@ -1349,6 +1495,19 @@ async function evalSayhiCore(targetCandidateIds, opts) {
     if (judgedAt < staleCutoff) return true;
     return false;
   });
+
+  // v0.22.3 · Phase 2·2d：批次阈值 K = 本批最多评估几人（spec §3.2.3）
+  // force=true 是单评（target 已指定 1 人），不应被 K 截断 → 仅批量评估时生效
+  const batchCfg = appConfig.sayhiBatch || {};
+  const maxBrowseK = parseInt(batchCfg.maxBrowseK, 10);
+  if (!force && Number.isFinite(maxBrowseK) && maxBrowseK > 0 && todo.length > maxBrowseK) {
+    if (self.BossDiag) {
+      self.BossDiag.log('info', 'sayhi.k_truncate', '浏览数 K 截断本批 todo', {
+        original: todo.length, K: maxBrowseK
+      });
+    }
+    todo = todo.slice(0, maxBrowseK);
+  }
 
   if (!todo.length) {
     return { ok: true, total: 0, message: '已评估且未陈旧，无需重评' };
@@ -1399,11 +1558,44 @@ async function evalSayhiCore(targetCandidateIds, opts) {
       //   - 全部走串行：扫 DOM → await LLM → upsert → (可选) 自动操作 → 冷却 → 下一人
       //   - 单评 = 批量 = 同一条循环，唯一区别是 todo.length 和是否启用自动操作
       const llmCfg = getCurrentLlmConfig();
-      const jd = await getCurrentJdTemplate();
+
+      // v0.21.0 · Phase 1·1c：多岗位 JD 路由
+      // 批量预算路由结果（避免循环里反复 listTemplates；HR 中途改 JD 别名不影响当前批次的一致性）
+      const allTemplates = await self.BossJD.listTemplates();
+      const routeResults = todo.map(function (c) {
+        const ja = c && c.expectation && c.expectation.jobAligned;
+        return self.BossJDRouter.routeWithDiagnosis(ja, allTemplates);
+      });
+      const routedCount = routeResults.filter(function (r) { return r.reason === 'matched'; }).length;
+      const unroutedCount = todo.length - routedCount;
+      if (self.BossDiag) {
+        self.BossDiag.log('info', 'sayhi.route', '沟通页路由完成', {
+          total: todo.length,
+          routed: routedCount,
+          unrouted: unroutedCount,
+          unrouteReasons: routeResults.filter(function (r) { return r.reason !== 'matched'; })
+            .reduce(function (acc, r) { acc[r.reason] = (acc[r.reason] || 0) + 1; return acc; }, {})
+        });
+      }
 
       // v0.20.9：先 upsert queued 全部（sidepanel 立即看到"待评估"卡片，串行循环里轮到谁再转 pending）
-      // 跟推荐页主链路一致，HR 视觉上能看到队列消化进度
-      await upsertEvaluations(todo.map(function (c) {
+      // v0.21.0 · 1c：未路由命中的候选人直接 upsert 为 'unrouted'，跳过 LLM 调用
+      await upsertEvaluations(todo.map(function (c, idx) {
+        const r = routeResults[idx];
+        if (r.reason !== 'matched') {
+          return {
+            candidateId: c.candidateId,
+            candidate: c,
+            evaluation: {
+              status: 'unrouted',
+              unrouteReason: r.reason,  // 'no_jobAligned' | 'no_match' | 'no_templates'
+              jobAligned: (c.expectation && c.expectation.jobAligned) || null,
+              judgedAt: Date.now()
+            },
+            capturedAt: c.capturedAt || Date.now(),
+            capturedUrl: 'sayhi-tab'
+          };
+        }
         return {
           candidateId: c.candidateId,
           candidate: c,
@@ -1415,15 +1607,23 @@ async function evalSayhiCore(targetCandidateIds, opts) {
 
       // v0.17.1.3：自动操作判断（仅批量评估启用，单评永不自动）
       // executeAction:true 来自 evalSayhiBatch，:false 来自 evalSayhiSingle
+      // v0.24.3 BUG fix：autoActionOn / autoMarkOn 拆为独立变量
+      //   起因：v0.22.2 两个 checkbox 设计为联动，pass 分支 gate 用 autoActionOn（绑 enabledBatchEval）。
+      //   v0.24.1 把 UI checkbox 联动放宽（两个独立），但 background gate 没拆 → HR 只勾「自动标不合适」
+      //   不勾「自动话术+求简历」时 autoActionOn=false，pass 候选人不入队 dismissed_candidates，
+      //   30s 撤销窗口永不生成。Fix：autoMarkOn 独立读 autoMarkUnsuitable。
       const autoActionOn = executeAction && !!(appConfig.autoAction && appConfig.autoAction.enabledBatchEval);
+      const autoMarkOn = executeAction && !!(appConfig.autoAction && appConfig.autoAction.autoMarkUnsuitable);
       const dryRun = !!(appConfig.autoAction && appConfig.autoAction.dryRun);
 
       if (self.BossDiag) {
         self.BossDiag.log('info', 'sayhi.serial_start', 'sayhi 串行评估启动', {
           todoCount: todo.length,
-          jd: jd && jd.name,
+          routedCount: routedCount,
+          unroutedCount: unroutedCount,
           executeAction: executeAction,
           autoActionOn: autoActionOn,
+          autoMarkOn: autoMarkOn,
           dryRun: dryRun,
           sayHiDomConfig: appConfig.sayHiDom || null,
           autoActionConfig: appConfig.autoAction || null,
@@ -1440,12 +1640,56 @@ async function evalSayhiCore(targetCandidateIds, opts) {
 
       const DOM_SCAN_FAIL_STOP = 3;
       let domScanFailStreak = 0, domScanSuccess = 0, domScanAttempts = 0;
-      let actionFailStreak = 0, actionSuccess = 0;
-      const ACTION_FAIL_STOP = 3;  // 连续 3 次自动操作失败 → 怀疑 BOSS 改 UI / 风控触发 → break
+      // v0.24.5 BUG fix：拆分 streak 为两个独立计数器（autoGreet / autoMark 各自统计）
+      //   起因：HR 反馈勾了 autoMark 但 pass 候选人没标。共用 actionFailStreak 时，
+      //   autoGreet 连环失败 3 次会**连带**锁 autoMark，让所有后续 pass 候选人 skip。
+      //   v0.22.4 引入 streak 的设计是"该方向连环失败 → 该方向停"，应当分别计数。
+      let actionGreetFailStreak = 0, actionMarkFailStreak = 0, actionSuccess = 0;
+      const ACTION_FAIL_STOP = 3;  // 连续 3 次（同一方向）失败 → 怀疑 BOSS 改 UI / 风控触发 → 停该方向
+
+      // v0.22.4 · Phase 3·3b：失败 step 分类策略（spec §3.3·3）
+      //   inject.js 各 fail return 带 result.failedStep 枚举字段，bg 这里按 step 走差异化策略
+      //   未匹配（policy=undef）→ 走老 actionFailStreak 兜底（保留作为分类表覆盖不到的偶发模式）
+      const STEP_POLICY = {
+        // 偶发：inject.js 内已 retry 1 次仍失败 → 跳过该候选人，不计 actionFailStreak
+        'editor-input': 'skip-candidate',
+        // BOSS UI 改名信号 → 立即停整批（避免连环失败）
+        'find-request-btn': 'stop-batch',
+        'find-unsuitable-btn': 'stop-batch',
+        // 已发出动作的后半失败 → partial 标记 + 继续（不消耗 fail streak）
+        'click-confirm': 'partial-continue',
+        'wait-card-gone': 'partial-continue',
+        'wait-message-sent': 'partial-continue',
+        'click-request-btn': 'partial-continue',
+        'wait-confirm-dialog': 'partial-continue'
+      };
+
+      // v0.22.3 · Phase 2·2d：招呼数 N — 本批最多发几条话术（spec §3.2.3）
+      // v0.25.0：删 N 招呼数 cap（概念彻底废弃）
 
       for (let i = 0; i < todo.length; i++) {
         if (sayhiEvalRun.abortRequested) break;
+        // v0.24.4：删 sweepExpiredDismissals 调用（30s 撤销窗口设计回退，pass 立即点不合适不需 sweep）
+        // v0.25.0：删 N 招呼数 cap 检查（概念彻底废弃）
         const c = todo[i];
+
+        // v0.21.0 · 1c：unrouted 候选人在批量预算阶段已经写入 IDB（status='unrouted'）
+        // 这里直接跳过 — 不做 DOM 扫描、不调 LLM、不走自动操作、不消耗冷却预算
+        // sayhiEvalRun.done 也 ++，让 sidepanel 进度条照常推进
+        const route = routeResults[i];
+        if (route.reason !== 'matched') {
+          sayhiEvalRun.done++;
+          if (self.BossDiag) {
+            self.BossDiag.log('info', 'sayhi.unrouted_skip', 'unrouted 候选人跳过 LLM', {
+              candidateId: c.candidateId,
+              jobAligned: (c.expectation && c.expectation.jobAligned) || null,
+              reason: route.reason
+            });
+          }
+          continue;
+        }
+        // v0.21.0 · 1c：本候选人评估用的 JD（按沟通职位别名路由命中）
+        const jd = route.jd;
 
         // 1) DOM 扫描（仅在 domDetail 缺失/陈旧 且 没超 scanMaxPerRun 预算 且 没连失败 3 次时尝试）
         const dd = c.bossSignals && c.bossSignals.domDetail;
@@ -1504,6 +1748,10 @@ async function evalSayhiCore(targetCandidateIds, opts) {
             modelId: (llmCfg && llmCfg.model) || ''
           };
         }
+        // v0.21.0 · 1c：在 evaluation 上记录路由信息，sidepanel (1d) 据此显示"沟通职位→JD"
+        evaluation.routedJdId = jd.jdId;
+        evaluation.routedJdName = jd.name;
+        evaluation.routedByJobName = route.byJobName;
         await upsertEvaluation({
           candidateId: c.candidateId,
           candidate: fresh,
@@ -1515,10 +1763,10 @@ async function evalSayhiCore(targetCandidateIds, opts) {
 
         // 4) 自动操作分支：仅 executeAction=true + autoActionOn + decision='符合' 时触发
         if (autoActionOn && evaluation.decision === '符合' && !sayhiEvalRun.abortRequested) {
-          if (actionFailStreak >= ACTION_FAIL_STOP) {
-            console.warn('[BOSS-Sniffer sayhi] 自动操作连续 ' + ACTION_FAIL_STOP + ' 次失败，停止该批后续自动操作');
+          if (actionGreetFailStreak >= ACTION_FAIL_STOP) {
+            console.warn('[BOSS-Sniffer sayhi] autoGreet 连续 ' + ACTION_FAIL_STOP + ' 次失败，停止该批后续 autoGreet');
             if (self.BossDiag) self.BossDiag.log('warn', 'sayhi.auto_action_auto_stop',
-              '自动操作连续失败自动停', { reason: 'fail-streak' });
+              'autoGreet 连续失败自动停（autoMark 独立不受影响）', { reason: 'greet-fail-streak' });
           } else {
             // 4.1) 幂等：最近 30min 内已被 greet-then-resume 成功过 → 跳过避免打扰
             const lastAction = fresh.lastAction;
@@ -1531,24 +1779,98 @@ async function evalSayhiCore(targetCandidateIds, opts) {
               if (self.BossDiag) self.BossDiag.log('info', 'sayhi.auto_action_skip',
                 '幂等跳过', { candidateId: c.candidateId, reason: 'already-greeted', lastAt: lastAction.attemptedAt });
             } else {
-              const greetTpl = await getCurrentGreetTemplate();
+              // v0.25.2：话术改为从该候选人路由命中的 JD 内嵌话术取（默认话术）
+              const greetTpl = getJdDefaultGreetTemplate(jd);
               if (!greetTpl || !greetTpl.text) {
-                console.warn('[BOSS-Sniffer sayhi] 跳过自动操作 uid=' + c.candidateId + ' reason=no-greet-template');
+                console.warn('[BOSS-Sniffer sayhi] 跳过自动操作 uid=' + c.candidateId + ' reason=no-greet-template-in-jd');
                 if (self.BossDiag) self.BossDiag.log('warn', 'sayhi.auto_action_skip',
                   '无话术模板跳过', { candidateId: c.candidateId, reason: 'no-greet-template' });
               } else {
                 console.info('[BOSS-Sniffer sayhi] 执行自动操作 uid=' + c.candidateId + ' greet=' + greetTpl.name + (dryRun ? ' [DRY-RUN]' : ''));
                 const actionResp = await triggerGreetThenResume(c.candidateId, greetTpl.text, dryRun);
                 await recordSayhiActionResult(c.candidateId, 'greet-then-resume', actionResp.result);
+
+                // v0.22.4 · 3b：按 STEP_POLICY 分流（spec §3.3·3）
+                const failedStep = actionResp.result && actionResp.result.failedStep;
+                const policy = failedStep ? STEP_POLICY[failedStep] : null;
+
                 if (actionResp.ok && (actionResp.result && actionResp.result.ok)) {
+                  // 完全成功 / 半成功（result.ok=true + partial=true，如 wait-card-gone / click-confirm 3b 后）
                   actionSuccess++;
-                  actionFailStreak = 0;
+                  actionGreetFailStreak = 0;
+                  // v0.25.0：删招呼数计数（cap 已废弃）
+                } else if (policy === 'stop-batch') {
+                  // v0.22.4 · 3b：BOSS UI 改名信号 → 立即停整批（避免连环失败）
+                  console.warn('[BOSS-Sniffer sayhi] 按 step 停整批 uid=' + c.candidateId + ' failedStep=' + failedStep);
+                  if (self.BossDiag) self.BossDiag.log('warn', 'sayhi.stop_batch_by_step',
+                    '按 step 停整批', { candidateId: c.candidateId, failedStep: failedStep });
+                  sayhiEvalRun.abortRequested = true;
+                  // 下次循环开头 abortRequested 检查会 break
+                } else if (policy === 'skip-candidate') {
+                  // v0.22.4 · 3b：inject.js 已重试 1 次仍 fail → 跳过本候选人，不计 actionFailStreak
+                  console.info('[BOSS-Sniffer sayhi] 按 step 跳过候选人 uid=' + c.candidateId + ' failedStep=' + failedStep);
+                  if (self.BossDiag) self.BossDiag.log('info', 'sayhi.skip_by_step',
+                    '按 step 跳过候选人', { candidateId: c.candidateId, failedStep: failedStep });
+                } else if (policy === 'partial-continue') {
+                  // v0.22.4 · 3b：已发出动作的后半失败 → partial 标记继续，不消耗 fail streak
+                  console.info('[BOSS-Sniffer sayhi] partial 继续 uid=' + c.candidateId + ' failedStep=' + failedStep);
+                  if (self.BossDiag) self.BossDiag.log('info', 'sayhi.partial_continue',
+                    'partial 继续不消耗 streak', { candidateId: c.candidateId, failedStep: failedStep });
+                  actionGreetFailStreak = 0;  // 半成功 → 链路通，重置 greet streak
                 } else {
-                  actionFailStreak++;
-                  console.warn('[BOSS-Sniffer sayhi] 自动操作失败 uid=' + c.candidateId +
+                  // 未分类失败 → 走老 actionGreetFailStreak 兜底（防 STEP_POLICY 表未覆盖的偶发模式）
+                  actionGreetFailStreak++;
+                  console.warn('[BOSS-Sniffer sayhi] autoGreet 失败 uid=' + c.candidateId +
+                    ' failedStep=' + (failedStep || 'unclassified') +
                     ' err=' + ((actionResp.result && actionResp.result.error) || actionResp.error));
                 }
               }
+            }
+          }
+        }
+
+        // v0.24.4：pass 决策 + autoMarkOn → 立刻点不合适（删 v0.23.0 30s 撤销窗口设计）
+        //   HR 勾 checkbox 已表达"信任 LLM"意图，不再二次确认；失败按 STEP_POLICY 处理
+        // v0.24.5 BUG fix：① 用 actionMarkFailStreak 独立计数（不再被 autoGreet streak 锁）
+        //                  ② decision='pass' 但 gate 不通过时输出 gate-blocked 诊断 log
+        if (evaluation.decision === 'pass') {
+          if (!autoMarkOn || sayhiEvalRun.abortRequested || actionMarkFailStreak >= ACTION_FAIL_STOP) {
+            // gate 不通过 — 输出诊断 log（v0.24.5 起每个被拒原因都可观察）
+            if (self.BossDiag) self.BossDiag.log('info', 'sayhi.auto_mark_gate_blocked',
+              'pass 候选人但 autoMark gate 不通过', {
+                candidateId: c.candidateId,
+                autoMarkOn: autoMarkOn,
+                abortRequested: sayhiEvalRun.abortRequested,
+                actionMarkFailStreak: actionMarkFailStreak,
+                streakLimit: ACTION_FAIL_STOP
+              });
+          } else {
+            const markResp = await triggerSayhiAction(c.candidateId, 'mark-unsuitable');
+            await recordSayhiActionResult(c.candidateId, 'mark-unsuitable', markResp.result);
+            const markFailedStep = markResp.result && markResp.result.failedStep;
+            const markPolicy = markFailedStep ? STEP_POLICY[markFailedStep] : null;
+            const markOk = markResp && markResp.ok && markResp.result && markResp.result.ok;
+            if (markOk) {
+              actionMarkFailStreak = 0;
+              actionSuccess++;
+              if (self.BossDiag) self.BossDiag.log('info', 'sayhi.auto_mark_done',
+                '已立即标不合适', { candidateId: c.candidateId });
+            } else if (markPolicy === 'stop-batch') {
+              // find-unsuitable-btn 找不到 → BOSS UI 改名信号，立刻停整批
+              if (self.BossDiag) self.BossDiag.log('warn', 'sayhi.auto_mark_stop_batch',
+                'STEP_POLICY=stop-batch 立即停整批', { candidateId: c.candidateId, failedStep: markFailedStep });
+              sayhiEvalRun.abortRequested = true;
+            } else if (markPolicy === 'partial-continue') {
+              // 已点了但 wait-card-gone / click 后半失败 → partial 标记继续不计 streak
+              if (self.BossDiag) self.BossDiag.log('warn', 'sayhi.auto_mark_partial',
+                'partial-continue 继续不计 streak', { candidateId: c.candidateId, failedStep: markFailedStep });
+            } else {
+              // 未分类失败 → 计入 actionMarkFailStreak，3 次累积停 autoMark（不影响 autoGreet）
+              actionMarkFailStreak++;
+              if (self.BossDiag) self.BossDiag.log('warn', 'sayhi.auto_mark_fail',
+                '自动标不合适失败', { candidateId: c.candidateId, streak: actionMarkFailStreak,
+                  failedStep: markFailedStep || 'unclassified',
+                  err: (markResp.result && markResp.result.error) || markResp.error });
             }
           }
         }
@@ -1652,6 +1974,82 @@ async function triggerSayhiAction(candidateId, action) {
       }
     });
   });
+}
+
+// v0.24.7：chrome.debugger 真用户点击（isTrusted=true）
+//   起因：HR 反馈 btn.click() 合成事件 BOSS 拒绝（"不合适" click 后 BOSS 端没标）；
+//        HR 确认真用户 click 直接生效，无需二级菜单。
+//   方案：用 chrome.debugger Input.dispatchMouseEvent 模拟真用户鼠标，
+//        event.isTrusted=true，BOSS 业务接受。
+//   代价：会出现"正在调试此浏览器"黄条（每次 attach/detach）。
+//   注意：每次 mark 单独 attach + detach 避免长期占用 debugger（与 lib/sayHi.js 复用同一 tab 时不冲突，串行执行）。
+async function realClickAtCoords(tabId, x, y) {
+  const target = { tabId: tabId };
+  function attachOnce() {
+    return new Promise(function (resolve, reject) {
+      chrome.debugger.attach(target, '1.3', function () {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'attach failed'));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+  function detach() {
+    return new Promise(function (resolve) {
+      chrome.debugger.detach(target, function () { resolve(); });
+    });
+  }
+  // v0.24.9 fix：自愈 attach（与 lib/sayHi.js attachDebugger 对齐）
+  //   起因：v0.24.8 HR 反馈第一个候选人 work + 后续失败。根因：上次 detach 调了但 chrome
+  //         内部状态没干净，下次 attach 报 "Another debugger already attached"；v0.24.7/.8
+  //         误判为"别人占用"piggyback 跳过 attach，导致命令发到错误 debugger 状态。
+  //   方案：检测到 "already attached" → 先 detach 再重 attach（清掉残留状态）
+  async function attach() {
+    try {
+      await attachOnce();
+    } catch (e) {
+      const msg = (e && e.message) || '';
+      if (/already attached|Another debugger/i.test(msg)) {
+        try { await detach(); } catch (_e) {}
+        await attachOnce();  // 自愈失败则抛错给外层 catch
+      } else {
+        throw e;
+      }
+    }
+  }
+  function dispatch(params) {
+    return new Promise(function (resolve, reject) {
+      chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', params, function () {
+        if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+        resolve();
+      });
+    });
+  }
+  let attached = false;
+  try {
+    await attach();
+    attached = true;
+    // v0.24.10 fix：mouseMoved 后**立即** mousePressed（不留 sleep）
+    //   起因：v0.24.8/.9 沿用 sayHi.js clickAt 的 30-110ms sleep 节奏。但 HR 说沟通页「不合适」
+    //   按钮**有 hover 二级菜单**（鼠标移上去会弹）—— mouseMoved 触发 hover 后 sleep 给 BOSS
+    //   足够时间弹出二级菜单覆盖原按钮，mousePressed 落到二级菜单上（click 触发的不是原按钮业务）。
+    //   推荐页打招呼按钮无 hover 菜单所以 sayHi.js work，这里必须去掉 mouseMoved → mousePressed
+    //   的 sleep（mouseMoved 后立即 press 不给 BOSS UI 处理 hover-popup 的时间窗）。
+    //   保留 mousePressed → mouseReleased 之间的 sleep（这是 click 内部 hold 时间，不触发 UI 变化）。
+    await dispatch({ type: 'mouseMoved', x: x, y: y, button: 'none' });
+    // 不 sleep：mouseMoved 后立即 press，避免 hover 二级菜单弹出覆盖按钮
+    await dispatch({ type: 'mousePressed', x: x, y: y, button: 'left', clickCount: 1 });
+    await new Promise(function (r2) { setTimeout(r2, 30 + Math.random() * 30); });  // 30-60ms click hold
+    await dispatch({ type: 'mouseReleased', x: x, y: y, button: 'left', clickCount: 1 });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  } finally {
+    // v0.24.9：始终 detach（不再判 alreadyAttached）—— 自愈策略下永远是自己 attach 的，detach 是干净退出
+    if (attached) await detach();
+  }
 }
 
 // v0.17.1.0：触发"输入话术 + 求简历"链路
@@ -1854,8 +2252,9 @@ function loadConfig() {
   // HR 主动开启后才监听 BOSS 列表，避免重启后默默工作。
   // 注意：'jd' key 不再走 loadConfig，由 lib/jd-templates.js 通过 BossStorageSync 自己管理。
   // v0.17.1.0：加 autoAction 走 sync（评估「符合」自动输入话术 + 求简历的开关）
-  configReady = self.BossStorageSync.migrateFromLocal(['llm', 'sayHi', 'sayHiDom', 'autoAction']).then(function () {
-    return self.BossStorageSync.get(['llm', 'sayHi', 'sayHiDom', 'autoAction']);
+  // v0.22.3 · Phase 2·2d：加 sayhiBatch（沟通页 K/N 阈值，HR 在 sidepanel 改完跨设备同步）
+  configReady = self.BossStorageSync.migrateFromLocal(['llm', 'sayHi', 'sayHiDom', 'autoAction', 'sayhiBatch']).then(function () {
+    return self.BossStorageSync.get(['llm', 'sayHi', 'sayHiDom', 'autoAction', 'sayhiBatch']);
   }).then(function (res) {
     if (self.BossLLM && typeof self.BossLLM.normalizeLlmSettings === 'function') {
       appConfig.llm = self.BossLLM.normalizeLlmSettings(res.llm || appConfig.llm);
@@ -1870,6 +2269,7 @@ function loadConfig() {
     if (res.sayHi) deepMerge(appConfig.sayHi, res.sayHi);
     if (res.sayHiDom) deepMerge(appConfig.sayHiDom, res.sayHiDom);
     if (res.autoAction) deepMerge(appConfig.autoAction, res.autoAction);
+    if (res.sayhiBatch) deepMerge(appConfig.sayhiBatch, res.sayhiBatch);
   });
   return configReady;
 }
@@ -2156,6 +2556,12 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
                        .catch(function (err) { sendResponse({ ok: false, error: err && err.message }); });
       return true;
 
+    // v0.22.5 · Phase 3·3c 前置：HR 在 IDB schema 升级前可选导出全库 JSON
+    case 'EXPORT_IDB_BUNDLE':
+      buildIdbBackupBundle().then(function (bundle) { sendResponse({ ok: true, bundle: bundle }); })
+                            .catch(function (err) { sendResponse({ ok: false, error: err && err.message }); });
+      return true;
+
     // ===== v0.13.0 沟通页「新招呼」=====
     case 'SCAN_SAYHI_TAB':
       (async function () {
@@ -2188,11 +2594,16 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
     case 'GET_SAYHI_POOL':
       (async function () {
+        // v0.24.4：删 sweepExpiredDismissals 调用 + dismissedQueue 字段（30s 撤销窗口设计回退）
         const pool = await getSayhiPool();
         const allEvals = await getEvaluations();
         const evalMap = {};
         for (let i = 0; i < allEvals.length; i++) evalMap[allEvals[i].candidateId] = allEvals[i];
         const jd = await getCurrentJdTemplate().catch(function () { return null; });
+
+        // v0.22.2 · Phase 2·2c：把 autoAction 配置带给 sidepanel，让两个 checkbox 显示真实状态
+        // v0.25.1：删 jdBossJobNames 字段（沟通页路由改用 JD.name 严格相等）
+        // v0.22.3 · Phase 2·2d：sayhiBatch 阈值（K/N）一起回带，sidepanel 渲染 input value
         sendResponse({
           ok: true,
           pool: pool,
@@ -2200,8 +2611,43 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           evalStatus: getSayhiEvalStatus(),
           jdTitle: (jd && jd.name) || null,
           jdId: (jd && jd.jdId) || '',
+          autoAction: {
+            enabledBatchEval: !!(appConfig.autoAction && appConfig.autoAction.enabledBatchEval),
+            autoMarkUnsuitable: !!(appConfig.autoAction && appConfig.autoAction.autoMarkUnsuitable),
+            dryRun: !!(appConfig.autoAction && appConfig.autoAction.dryRun)
+          },
+          sayhiBatch: {
+            // v0.25.0：删招呼数 cap 字段
+            maxBrowseK: (appConfig.sayhiBatch && appConfig.sayhiBatch.maxBrowseK) || null
+          },
           llmConfigured: isCurrentLlmConfigured()
         });
+      })();
+      return true;
+
+    // v0.24.4：删 CANCEL_DISMISSED_CANDIDATE handler（30s 撤销窗口设计回退）
+
+    // v0.24.7：chrome.debugger 真点击 — inject.js 找到按钮 + 取坐标 后调
+    case 'REAL_CLICK_AT_COORDS':
+      (async function () {
+        const tabId = sender && sender.tab && sender.tab.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: 'no-tab-id（sender.tab 缺失，可能消息来源不是 content.js）' });
+          return;
+        }
+        const x = parseInt(msg.x, 10);
+        const y = parseInt(msg.y, 10);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+          sendResponse({ ok: false, error: 'invalid-coords: x=' + msg.x + ' y=' + msg.y });
+          return;
+        }
+        const r = await realClickAtCoords(tabId, x, y);
+        if (self.BossDiag) {
+          self.BossDiag.log(r.ok ? 'info' : 'warn', 'sayhi.real_click_' + (r.ok ? 'done' : 'fail'),
+            'chrome.debugger 真点击 ' + (r.ok ? '成功' : '失败'),
+            { x: x, y: y, error: r.error });
+        }
+        sendResponse(r);
       })();
       return true;
 
@@ -2524,6 +2970,11 @@ chrome.alarms.get('pending-watchdog', function (existing) {
   if (!existing) chrome.alarms.create('pending-watchdog', { periodInMinutes: PENDING_WATCHDOG_PERIOD_MIN });
 });
 
+// v0.24.4：删 v0.23.0 dismissed-sweep / dismissed-cleanup 两个 alarm 注册（30s 撤销窗口设计回退）
+//   主动清理 v0.23.0 已注册的 alarms（HR 升级 v0.24.4 后避免老 alarm 继续 fire 没人处理）
+chrome.alarms.clear('dismissed-sweep');
+chrome.alarms.clear('dismissed-cleanup');
+
 async function sweepStalePending() {
   try {
     const all = await getEvaluations();
@@ -2570,4 +3021,5 @@ chrome.alarms.onAlarm.addListener(function (alarm) {
   } else if (alarm.name === 'pending-watchdog') {
     sweepStalePending().catch(function () {});
   }
+  // v0.24.4：删 dismissed-sweep / dismissed-cleanup alarm 分支（30s 撤销窗口设计回退）
 });

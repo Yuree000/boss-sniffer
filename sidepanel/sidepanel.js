@@ -63,7 +63,9 @@ function fmtPath(p) {
 }
 
 // 决策值 → CSS 类（业务逻辑 §3 二态：符合 / pass；以及 v0.20.9 三态：queued / pending / failed）
+// v0.21.0 · Phase 1·1d：加 'unrouted' 状态（沟通职位未识别 → 跳过 LLM）
 function decisionClass(decision, status) {
+  if (status === 'unrouted') return 'unrouted'; // v0.21.0 未路由命中
   if (status === 'queued') return 'queued';   // v0.20.9 待评估（在 LLM 队列里等）
   if (status === 'pending') return 'pending'; // 评估中（worker 已进入，LLM 真正在跑）
   if (status === 'failed') return 'failed';
@@ -73,10 +75,60 @@ function decisionClass(decision, status) {
 }
 
 function decisionLabel(decision, status) {
+  if (status === 'unrouted') return '🟡 未识别岗位';  // v0.21.0
   if (status === 'queued') return '⏳ 待评估';
   if (status === 'pending') return '🔄 评估中';
   if (status === 'failed') return '评估失败';
   return decision || '?';
+}
+
+// v0.21.0 · Phase 1·1d：候选人卡片头部的"沟通职位 → 路由到 JD"小字行
+// 三种情况：
+//   - unrouted: 🟡 黄底，提示已跳过评估
+//   - 已路由（routedJdName 存在）：灰色 "沟通职位『xxx』→ JD: yyy"
+//   - 仅有 jobAligned（idle/queued/pending，未跑完路由）：灰色 "沟通职位『xxx』"
+//   - 都没有：返回 null（不渲染）
+function makeRoutingHeader(record) {
+  const e = (record && record.evaluation) || {};
+  const c = (record && record.candidate) || {};
+  const jobAligned = (c.expectation && c.expectation.jobAligned) || e.jobAligned || null;
+
+  if (e.status === 'unrouted') {
+    const div = document.createElement('div');
+    div.className = 'routing-header unrouted';
+    if (e.unrouteReason === 'no_jobAligned' || !jobAligned) {
+      div.textContent = '🟡 沟通职位缺失 · 已跳过评估';
+    } else {
+      div.textContent = '🟡 沟通职位「' + jobAligned + '」未识别 · 已跳过评估（admin 加该别名后重评）';
+    }
+    return div;
+  }
+
+  if (e.routedJdName) {
+    const div = document.createElement('div');
+    div.className = 'routing-header matched';
+    const ja = document.createElement('span');
+    ja.textContent = '沟通职位「' + (jobAligned || '?') + '」';
+    div.appendChild(ja);
+    const arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    arrow.textContent = ' → ';
+    div.appendChild(arrow);
+    const jd = document.createElement('span');
+    jd.className = 'jd-routed';
+    jd.textContent = 'JD: ' + e.routedJdName;
+    div.appendChild(jd);
+    return div;
+  }
+
+  if (jobAligned) {
+    const div = document.createElement('div');
+    div.className = 'routing-header';
+    div.textContent = '沟通职位「' + jobAligned + '」';
+    return div;
+  }
+
+  return null;
 }
 
 // 将条件 value 翻译成 HR 友好的状态文本
@@ -413,8 +465,16 @@ async function refreshEvaluations() {
     }
 
     const list = $('evaluations');
-    // v0.20.6：START_LOOP 在 background.js 已经清空 evaluations，evaluations 表里只有本轮数据，无需 sidepanel 过滤
-    const records = sortByBatchAndIndex(res.records || []);
+    // v0.24.2 fix：推荐页 pane 只显示 recommend / latest scenario 候选人
+    //   原 v0.20.6 注释假设 evaluations 表只有本轮数据，但沟通页评估也写同一张表
+    //   导致单评沟通页候选人后他出现在推荐页列表（HR 反馈 BUG：李常发出现在推荐页）
+    //   沟通页（chat / sayhi-tab）有独立的 #sayhi-evaluations 列表渲染，不应再混进 #evaluations
+    const allRecords = sortByBatchAndIndex(res.records || []);
+    const records = allRecords.filter(function (r) {
+      const sc = r.candidate && r.candidate.source && r.candidate.source.scenario;
+      // 推荐页 tab 收 recommend + latest；兜底兼容旧记录 scenario 缺失情况
+      return sc === 'recommend' || sc === 'latest' || !sc;
+    });
     $('eval-count').textContent = '(' + records.length + ')';
 
     list.innerHTML = '';
@@ -714,45 +774,8 @@ $('jd-current').addEventListener('change', async function (ev) {
   }
 });
 
-// v0.17.1.0：话术下拉切换（持久化到 BossGreetTemplates；不通知 background）
-$('greet-current').addEventListener('change', async function (ev) {
-  const newId = ev.target.value || '';
-  if (self.BossGreetTemplates) {
-    await self.BossGreetTemplates.setCurrentGreetId(newId);
-  }
-});
-
-async function loadGreetDropdown() {
-  if (!self.BossGreetTemplates) {
-    console.warn('[panel] BossGreetTemplates 模块未加载');
-    return;
-  }
-  await self.BossGreetTemplates.ensureSeeded();
-  const list = await self.BossGreetTemplates.listTemplates();
-  const cur = await self.BossGreetTemplates.getCurrentGreetId();
-  const sel = $('greet-current');
-  sel.innerHTML = '';
-  if (list.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = '— 无可选话术（请去 admin 新建）—';
-    sel.appendChild(opt);
-    return;
-  }
-  if (!cur || !list.some(function (t) { return t.greetId === cur; })) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = '— 未选中 —';
-    sel.appendChild(opt);
-  }
-  list.forEach(function (t) {
-    const opt = document.createElement('option');
-    opt.value = t.greetId;
-    opt.textContent = t.name;
-    if (t.greetId === cur) opt.selected = true;
-    sel.appendChild(opt);
-  });
-}
+// v0.25.0：删「当前话术」下拉 + loadGreetDropdown（话术 v0.25.2 集成 JD 后由 JD 默认话术决定）
+//   过渡期沿用 appConfig.currentGreetTemplateId（admin 仍有话术管理；HR 此前选过的话术继续生效）
 
 // v0.17.1.3：检查 appConfig.autoAction.enabledBatchEval（批量自动开关），决定是否亮「批量自动 ON」徽章
 //   单评始终手动，不需要徽章（HR 始终自己点 🎯 决定）
@@ -831,7 +854,7 @@ if (btnDashboard) {
 // 初始化 + 自动刷新
 // 看板入口已迁移到 admin 顶部（v0.12.3）；sidepanel 不再放看板按钮
 loadJDDropdown();
-loadGreetDropdown();           // v0.17.1.0
+// v0.25.0：删 loadGreetDropdown 调用（#greet-current 元素已删）
 refreshAutoActionBadge();      // v0.17.1.0
 refresh();
 setInterval(refresh, 1500);
@@ -920,6 +943,11 @@ setInterval(refreshAutoActionBadge, 5000);
   } catch (e) {}
 
   // ===== 数据拉取 + 渲染 =====
+  // v0.22.1 · Phase 2·2b：开始处理本批 按钮在 click handler 内部跑扫描+评估，
+  // 期间 refreshSayhiPane 不能覆盖按钮文字（否则会刷成"评估中"或"开始处理本批"）。
+  // 用 sayhiStartInFlight 标志 gate 住，handler 退出后 refresh 接管。
+  let sayhiStartInFlight = false;
+
   async function refreshSayhiPane() {
     try {
       const res = await chrome.runtime.sendMessage({ type: 'GET_SAYHI_POOL' });
@@ -935,10 +963,9 @@ setInterval(refreshAutoActionBadge, 5000);
     const evalMap = res.evaluationsByCandidateId || {};
     const evalStatus = res.evalStatus || { running: false, total: 0, done: 0 };
 
-    // 顶部计数 + JD title
+    // 顶部计数（v0.21.0 · 1d：删了 sayhi-jd-title 全局 JD 标，沟通页每候选人各自走自己 JD 路由）
     $('sayhi-pool-count').textContent = '(' + pool.length + ')';
     $('sayhi-pool-count-2').textContent = pool.length;
-    $('sayhi-jd-title').textContent = 'JD: ' + (res.jdTitle || '—');
 
     // 陈旧提示：池子里最旧 capturedAt > 1 小时
     const oneHourAgo = Date.now() - 60 * 60 * 1000;
@@ -962,6 +989,59 @@ setInterval(refreshAutoActionBadge, 5000);
       evalBtn.textContent = '⚡ 全部已评估';
     } else {
       evalBtn.textContent = '⚡ 一键评估 ' + todo.length + ' 人';
+    }
+
+    // v0.22.1 · Phase 2·2b：新统一按钮 #btn-sayhi-start / #btn-sayhi-stop-batch 状态管理
+    // click handler 内部期间（sayhiStartInFlight=true）由 handler 直接控制按钮文字，refresh 不干预
+    if (!sayhiStartInFlight) {
+      const startBtn = $('btn-sayhi-start');
+      const stopBatchBtn = $('btn-sayhi-stop-batch');
+      if (startBtn && stopBatchBtn) {
+        if (evalStatus.running) {
+          startBtn.disabled = true;
+          startBtn.textContent = '⚡ 评估中 ' + evalStatus.done + ' / ' + evalStatus.total;
+          stopBatchBtn.disabled = false;
+        } else {
+          startBtn.disabled = !res.llmConfigured;
+          startBtn.textContent = '▶ 开始处理本批';
+          stopBatchBtn.disabled = true;
+        }
+      }
+    }
+
+    // v0.24.1：移除 v0.22.2 的 jdHasAliases 联动约束（设计已过时）
+    //   旧设计：当前 JD 没配 bossJobNames → 强制 disabled「防错岗」
+    //   过时原因：v0.21.2 multi-JD per-candidate 路由完成后，unrouted 候选人
+    //   在 evalSayhiCore 循环开头 continue 跳过 LLM + 跳过自动操作。
+    //   即配置态和执行态解耦——checkbox 可点 = 表达 HR 意图；runtime 仍按
+    //   候选人路由结果决定是否触发自动操作。
+    //   也移除 evalStatus.running 限制（评估中也允许改，下个候选人即生效）。
+    const autoCfg = res.autoAction || { enabledBatchEval: false, autoMarkUnsuitable: false };
+    const autoGreetEl = $('sayhi-auto-greet-toggle');
+    const autoMarkEl = $('sayhi-auto-mark-unsuitable-toggle');
+    if (autoGreetEl) {
+      autoGreetEl.checked = !!autoCfg.enabledBatchEval;
+      autoGreetEl.disabled = false;
+      autoGreetEl.title = '评估为「符合」时自动输入话术 + 求简历。仅对路由命中 JD 的候选人生效（未命中候选人 unrouted 跳过）。';
+    }
+    if (autoMarkEl) {
+      autoMarkEl.checked = !!autoCfg.autoMarkUnsuitable;
+      autoMarkEl.disabled = false;
+      autoMarkEl.title = '评估为「pass」时入队 30s 撤销窗口后自动标不合适。仅对路由命中 JD 的候选人生效（未命中候选人 unrouted 跳过）。';
+    }
+
+    // v0.25.0：删 N 招呼数 input（maxGreetN 概念彻底废弃）；仅保留 K 浏览人数 input
+    const batchCfg = res.sayhiBatch || { maxBrowseK: null };
+    const kInput = $('sayhi-loop-goal-k');
+    if (kInput) {
+      // 避免 HR 正在输入时被 1.5s 轮询覆盖（focus 状态下不刷 value）
+      if (document.activeElement !== kInput) {
+        kInput.value = batchCfg.maxBrowseK == null ? '' : String(batchCfg.maxBrowseK);
+      }
+      kInput.disabled = evalStatus.running;
+      kInput.title = evalStatus.running
+        ? '评估运行中，停止后再改阈值'
+        : '本批最多评估几人，留空 = 处理本批所有未读';
     }
 
     // 进度条
@@ -1008,6 +1088,8 @@ setInterval(refreshAutoActionBadge, 5000);
       }
       listEl.appendChild(renderSayhiCard(record, c));
     });
+
+    // v0.24.4：删 renderDismissedQueue 调用（30s 撤销窗口设计回退）
   }
 
   // v0.14.0-pre：操作调试日志（内存数组，最近 N 条）
@@ -1203,30 +1285,48 @@ setInterval(refreshAutoActionBadge, 5000);
       dec.className = 'decision pending';
       dec.textContent = '未评估';
       rightBlock.appendChild(dec);
-      rightBlock.appendChild(makeSingleEvalButton(poolItem.candidateId));
+      // v0.25.1：隐藏占位卡片上的 ⚡ 评估按钮（保留 makeSingleEvalButton 函数供调试时启用）
+      //   rightBlock.appendChild(makeSingleEvalButton(poolItem.candidateId));
       row.appendChild(rightBlock);
       card.appendChild(row);
-      // 招呼文本展示
-      if (poolItem.greeting && poolItem.greeting.content) {
-        const meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.style.cssText = 'color:#666;margin-top:4px;line-height:1.4;';
-        meta.textContent = '"' + poolItem.greeting.content.slice(0, 80) + (poolItem.greeting.content.length > 80 ? '…' : '') + '"';
-        card.appendChild(meta);
-      }
+      // v0.21.0 · 1d：未评估时也显示沟通职位（让 HR 知道路由命中目标）
+      // 构造一个临时 record 包装 poolItem 让 makeRoutingHeader 能找到 jobAligned
+      const rh = makeRoutingHeader({ candidate: poolItem, evaluation: {} });
+      if (rh) card.appendChild(rh);
+      // v0.25.2：隐藏沟通职位下方的招呼文本展示（HR 反馈不需要看）
+      //   保留代码注释，调试时可恢复
+      //   if (poolItem.greeting && poolItem.greeting.content) {
+      //     const meta = document.createElement('div');
+      //     meta.className = 'meta';
+      //     meta.style.cssText = 'color:#666;margin-top:4px;line-height:1.4;';
+      //     meta.textContent = '"' + poolItem.greeting.content.slice(0, 80) + (poolItem.greeting.content.length > 80 ? '…' : '') + '"';
+      //     card.appendChild(meta);
+      //   }
       return card;
     }
     // 已评估：用现有 renderEvaluation 渲染（复用样式 + 展开逻辑）
     const card = renderEvaluation(record);
-    // 在评估卡片的决策块旁边补：🎯 一键操作 按钮 + ⚡ 评估按钮（重评）
+    // v0.21.0 · 1d：把"沟通职位 → 路由 JD"小字头插在 eval-row1 之后（unrouted 也走这条）
+    const routingHeader = makeRoutingHeader(record);
+    if (routingHeader) {
+      const row1 = card.querySelector('.eval-row1');
+      if (row1 && row1.nextSibling) {
+        card.insertBefore(routingHeader, row1.nextSibling);
+      } else if (row1) {
+        card.appendChild(routingHeader);
+      }
+    }
+    // v0.25.1：隐藏卡片上的「🎯 话术+求简历 / 🎯 标不合适」+「⚡ 评估」按钮
+    //   makeActionButton / makeSingleEvalButton 函数保留供调试时恢复
+    //   自动操作流程不受影响（仍由批量评估 + autoGreet/autoMark checkbox 驱动）
     const decisionBlock = card.querySelector('.decision-block');
     if (decisionBlock) {
-      // v0.14.0-pre：根据评估结果挂一键操作按钮
-      const actBtn = makeActionButton(record, poolItem);
-      if (actBtn) decisionBlock.appendChild(actBtn);
-      const btn = makeSingleEvalButton(record.candidateId);
-      btn.title = '重新评估此人';
-      decisionBlock.appendChild(btn);
+      // v0.25.1 调试时启用：
+      //   const actBtn = makeActionButton(record, poolItem);
+      //   if (actBtn) decisionBlock.appendChild(actBtn);
+      //   const btn = makeSingleEvalButton(record.candidateId);
+      //   btn.title = '重新评估此人';
+      //   decisionBlock.appendChild(btn);
       // v0.14.0-pre：如有 lastAction，显示一个小标记
       // v0.17.1.0：新增 greet-then-resume action（评估「符合」自动求简历）的徽章变体
       const last = poolItem && poolItem.lastAction;
@@ -1253,6 +1353,160 @@ setInterval(refreshAutoActionBadge, 5000);
   }
 
   // ===== 按钮事件 =====
+
+  // v0.22.1 · Phase 2·2b：统一"开始处理本批"按钮 — 串行执行扫描 + 评估
+  // 旧的 btn-sayhi-scan / -eval 仍可单独点（2d 才迁移到测试模式折叠区）
+  $('btn-sayhi-start').addEventListener('click', async function () {
+    if (sayhiStartInFlight) return;
+    const btn = $('btn-sayhi-start');
+    sayhiStartInFlight = true;
+    btn.disabled = true;
+    btn.textContent = '🔍 扫描中（约 5-10 秒）…';
+    try {
+      // Phase 1：扫描本页候选人入池
+      const scanRes = await chrome.runtime.sendMessage({ type: 'SCAN_SAYHI_TAB' });
+      if (!scanRes || !scanRes.ok) {
+        showToast('扫描失败：' + ((scanRes && scanRes.error) || '未知错误'), 'error');
+        return;
+      }
+      if (!scanRes.scanned) {
+        const hint = scanRes.message || '未扫到候选人 — 请切到 BOSS「沟通」→「新招呼」tab 后再点';
+        showToast(hint, 'error');
+        return;
+      }
+      showToast('✅ 扫到 ' + scanRes.scanned + ' 人，入池 ' + scanRes.upserted + ' 人，开始评估…');
+
+      // Phase 2：触发批量评估（背景串行循环，含 1c 路由层）
+      btn.textContent = '⚡ 启动评估…';
+      const evalRes = await chrome.runtime.sendMessage({ type: 'EVAL_SAYHI_BATCH' });
+      if (!evalRes || !evalRes.ok) {
+        showToast('评估启动失败：' + ((evalRes && evalRes.error) || '未知错误'), 'error');
+        return;
+      }
+      if (evalRes.total === 0) {
+        showToast(evalRes.message || '池子里所有候选人都已评估且未陈旧');
+      }
+      // 评估异步进行中 — 后续按钮状态 / 进度条由 refreshSayhiPane 轮询 evalStatus 接管
+    } catch (e) {
+      showToast('开始处理失败：' + e.message, 'error');
+    } finally {
+      sayhiStartInFlight = false;
+      refreshSayhiPane();  // 让按钮 / 进度立刻对齐 evalStatus
+    }
+  });
+
+  // v0.22.2 · Phase 2·2c：自动操作 checkbox 写回 appConfig.autoAction
+  // sidepanel checkbox toggle → SET_CONFIG_SECTION → background 更新 appConfig + 持久化到 chrome.storage.sync
+  // evalSayhiCore 下次跑时读到新 flag（无需重启）
+  $('sayhi-auto-greet-toggle').addEventListener('change', async function (ev) {
+    const checked = !!ev.target.checked;
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'SET_CONFIG_SECTION',
+        section: 'autoAction',
+        patch: { enabledBatchEval: checked }
+      });
+      if (res && res.ok) {
+        showToast(checked ? '✅ 已启用：评估「符合」自动话术 + 求简历' : '⏸ 已关闭自动话术 + 求简历');
+      } else {
+        showToast('保存配置失败：' + ((res && res.error) || '未知错误'), 'error');
+        ev.target.checked = !checked;  // 回滚 UI
+      }
+    } catch (e) {
+      showToast('保存配置失败：' + e.message, 'error');
+      ev.target.checked = !checked;
+    }
+    refreshSayhiPane();
+  });
+
+  $('sayhi-auto-mark-unsuitable-toggle').addEventListener('change', async function (ev) {
+    const checked = !!ev.target.checked;
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'SET_CONFIG_SECTION',
+        section: 'autoAction',
+        patch: { autoMarkUnsuitable: checked }
+      });
+      if (res && res.ok) {
+        // Phase 2 阶段提示 HR 此设置暂不执行（Phase 3 才接入）
+        showToast(checked
+          ? '⚠ 已记录配置 — Phase 3 加 30s 撤销窗口后才实际执行（当前不会自动点不合适）'
+          : '⏸ 已关闭自动标不合适');
+      } else {
+        showToast('保存配置失败：' + ((res && res.error) || '未知错误'), 'error');
+        ev.target.checked = !checked;
+      }
+    } catch (e) {
+      showToast('保存配置失败：' + e.message, 'error');
+      ev.target.checked = !checked;
+    }
+    refreshSayhiPane();
+  });
+
+  // v0.22.3 · Phase 2·2d：K/N 阈值 input change handler
+  //   空字符串 / NaN / ≤ 0 → 持久化为 null（spec §3.2.3 "留空 = 全部" 语义）
+  //   正整数 → 持久化为该整数
+  // 注：用 'change' 而非 'input'，避免 HR 边敲边写 chrome.storage.sync 触发频次限制
+  function parseThresholdValue(rawStr) {
+    const v = parseInt(String(rawStr || '').trim(), 10);
+    return (Number.isFinite(v) && v > 0) ? v : null;
+  }
+  $('sayhi-loop-goal-k').addEventListener('change', async function (ev) {
+    const v = parseThresholdValue(ev.target.value);
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'SET_CONFIG_SECTION',
+        section: 'sayhiBatch',
+        patch: { maxBrowseK: v }
+      });
+      if (res && res.ok) {
+        showToast(v == null ? '✓ 浏览数：留空 = 全部未读' : ('✓ 本批浏览数 = ' + v));
+        // 规范化显示（如 "5.0" → "5"）
+        ev.target.value = v == null ? '' : String(v);
+      } else {
+        showToast('保存阈值失败：' + ((res && res.error) || '未知错误'), 'error');
+      }
+    } catch (e) {
+      showToast('保存阈值失败：' + e.message, 'error');
+    }
+    refreshSayhiPane();
+  });
+  // v0.25.0：删 #sayhi-loop-goal-n change handler（maxGreetN 概念已废弃）
+
+  // v0.25.0：候选人池卡片内嵌「清空池子」按钮 handler（复用现有 CLEAR_SAYHI_POOL message）
+  const btnClearInline = $('btn-sayhi-clear-pool-inline');
+  if (btnClearInline) {
+    btnClearInline.addEventListener('click', async function () {
+      if (!confirm('确定清空沟通页候选人池吗？已有的评估结果不会被删。')) return;
+      try {
+        const res = await chrome.runtime.sendMessage({ type: 'CLEAR_SAYHI_POOL' });
+        if (res && res.ok) {
+          showToast('✅ 池子已清空（清掉 ' + (res.cleared || 0) + ' 人）');
+        } else {
+          showToast('清空失败：' + ((res && res.error) || '未知错误'), 'error');
+        }
+      } catch (e) {
+        showToast('清空失败：' + e.message, 'error');
+      }
+      refreshSayhiPane();
+    });
+  }
+
+  // v0.22.1 · Phase 2·2b：新统一停止按钮（与 #btn-sayhi-stop 行为一致）
+  $('btn-sayhi-stop-batch').addEventListener('click', async function () {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'STOP_SAYHI_EVAL' });
+      if (res && res.ok) {
+        showToast('已请求停止（未发起的 LLM 调用会跳过，已发起的让它完成）');
+      } else {
+        showToast('停止失败：' + ((res && res.error) || '未知错误'), 'error');
+      }
+    } catch (e) {
+      showToast('停止失败：' + e.message, 'error');
+    }
+    refreshSayhiPane();
+  });
+
   $('btn-sayhi-scan').addEventListener('click', async function () {
     const btn = $('btn-sayhi-scan');
     btn.disabled = true;

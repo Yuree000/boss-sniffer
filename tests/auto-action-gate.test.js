@@ -61,8 +61,14 @@ test('autoActionOn 双判：executeAction && appConfig.autoAction.enabledBatchEv
   assert.match(m[0], /executeAction\s*&&[\s\S]*?appConfig\.autoAction[\s\S]*?enabledBatchEval/);
 });
 
-test('loadConfig 把 autoAction 加入 migrateFromLocal', () => {
-  assert.match(src, /migrateFromLocal\(\['llm', 'sayHi', 'sayHiDom', 'autoAction'\]\)/);
+test('loadConfig 把 autoAction 加入 migrateFromLocal（v0.22.3 起列表含 sayhiBatch）', () => {
+  // 只断言 autoAction 在列表里，不锁定整个数组（防止后续加新 section 时此处假阴性）
+  const m = src.match(/migrateFromLocal\(\[([^\]]+)\]\)/);
+  assert.ok(m, '未找到 migrateFromLocal 调用');
+  assert.match(m[0], /'autoAction'/);
+  assert.match(m[0], /'llm'/);
+  assert.match(m[0], /'sayHi'/);
+  assert.match(m[0], /'sayHiDom'/);
 });
 
 test('loadConfig 含 autoAction 的 deepMerge', () => {

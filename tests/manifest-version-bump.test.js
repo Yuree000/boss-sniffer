@@ -9,8 +9,8 @@ const test = require('node:test');
 const ROOT = path.resolve(__dirname, '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
 
-test('manifest.json version === 0.20.11', () => {
-  assert.equal(manifest.version, '0.20.11');
+test('manifest.json version === 1.0.0', () => {
+  assert.equal(manifest.version, '1.0.0');
 });
 
 test('manifest.json name === BOSS Sniffer（v0.20.11 简化，去掉「· 沟通页完整版」副标题）', () => {
@@ -21,9 +21,12 @@ test('manifest.json manifest_version === 3', () => {
   assert.equal(manifest.manifest_version, 3);
 });
 
-test('manifest.json description 描述 v0.20.11 扩展名简化', () => {
-  assert.match(manifest.description, /v0\.20\.11/);
-  assert.match(manifest.description, /扩展名|BOSS Sniffer|沟通页完整版/);
+test('manifest.json description 一句话当前版本主题（v0.24.4 起规则，不再保留历史段）', () => {
+  // description 简化为一句话当前版本 + 指向 CHANGELOG（v0.24.4 起规则）
+  assert.match(manifest.description, new RegExp('v' + manifest.version));
+  assert.match(manifest.description, /CHANGELOG/);
+  // description 应短（< 200 字符），不再像 v0.24.3 前那样累积历史
+  assert.ok(manifest.description.length < 200, 'description 应一句话（实测 ' + manifest.description.length + ' 字符）');
 });
 
 test('manifest.json 含必要 permissions', () => {

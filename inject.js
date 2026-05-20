@@ -946,6 +946,32 @@
   }
 
   // 文本选择器：找最叶子的纯文本节点的父元素（不会命中父容器的"按钮组"汇总文本）
+  // v0.24.6 BUG fix：找到文本节点后，向上 4 层找最近的"真正可点击元素"
+  //   起因：HR 反馈批量评估时 autoMark 'wait-card-gone' partial=true（click 调了但
+  //   BOSS 没真标）。根因：BOSS 工具栏 DOM 类似 <div class="op"><span class="text">
+  //   不合适</span></div>，文本节点的 parentElement 是 span.text，BOSS 的 @click
+  //   handler 绑在外层 div.op 上。click span.text 时事件理论上冒泡到 div.op，
+  //   但某些 Vue/React 实现用 event.target 严格匹配或外层 stopPropagation，
+  //   导致 BOSS 业务未触发。
+  //   Fix：找到文本节点后，向上找最近的 [button-like] 祖先元素再 click。
+  //   兼容旧行为：若找不到 button-like 祖先，回退到文本节点 parentElement（不破坏现有 work 的路径如「求简历」）。
+  function _isButtonLike(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = el.tagName;
+    if (tag === 'BUTTON' || tag === 'A') return true;
+    const role = el.getAttribute && el.getAttribute('role');
+    if (role === 'button' || role === 'link') return true;
+    const cls = (el.className && typeof el.className === 'string') ? el.className : '';
+    // BOSS 常见按钮 class：.btn / .operate-btn / .icon-btn / .op-btn / .action-btn
+    if (/\b(btn|button|operate|op-?btn|action|icon-btn|clickable)\b/i.test(cls)) return true;
+    // [data-v-*] 元素 + cursor:pointer 也算（Vue 编译产物）
+    try {
+      const cursor = window.getComputedStyle(el).cursor;
+      if (cursor === 'pointer') return true;
+    } catch (e) {}
+    return false;
+  }
+
   function _findClickableByText(text, root) {
     root = root || document;
     let result = null;
@@ -955,14 +981,25 @@
       while ((node = walker.nextNode())) {
         const t = (node.textContent || '').trim();
         if (t !== text) continue;
-        const el = node.parentElement;
-        if (!el) continue;
-        const r = el.getBoundingClientRect();
+        const baseEl = node.parentElement;
+        if (!baseEl) continue;
+        const r = baseEl.getBoundingClientRect();
         if (!r.width || !r.height) continue;
-        const style = window.getComputedStyle(el);
+        const style = window.getComputedStyle(baseEl);
         if (style.display === 'none' || style.visibility === 'hidden') continue;
         if (style.pointerEvents === 'none') continue;
-        result = el;
+        // v0.24.6 fix：向上找最近的 button-like 祖先（最多 4 层）
+        //   命中则返回该祖先；找不到则回退到 baseEl（兼容旧行为）
+        let clickTarget = baseEl;
+        let cursor = baseEl;
+        for (let depth = 0; depth < 4 && cursor; depth++) {
+          if (_isButtonLike(cursor)) {
+            clickTarget = cursor;
+            break;
+          }
+          cursor = cursor.parentElement;
+        }
+        result = clickTarget;
         break;
       }
     } catch (e) {}
@@ -1019,6 +1056,35 @@
     return card;
   }
 
+  // v0.24.7：请求 BG 用 chrome.debugger 在指定坐标真用户点击（isTrusted=true）
+  // 链路：inject postMessage 'real-click-request' → content → BG → 真点击 → BG response → content postMessage 'real-click-result' → inject resolve
+  // 12s 超时（attach + 2 dispatchMouseEvent + detach 正常 <2s，留 buffer）
+  function _requestRealClick(x, y) {
+    return new Promise(function (resolve) {
+      const reqId = 'rc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+      let settled = false;
+      function handler(ev) {
+        if (ev.source !== window) return;
+        const m = ev.data;
+        if (!m || !m.__bossSniffer) return;
+        if (m.kind !== 'real-click-result') return;
+        if (m.requestId !== reqId) return;
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', handler);
+        resolve({ ok: !!m.ok, error: m.error || null });
+      }
+      window.addEventListener('message', handler);
+      window.postMessage({ __bossSniffer: true, kind: 'real-click-request', requestId: reqId, x: x, y: y }, '*');
+      setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', handler);
+        resolve({ ok: false, error: 'real-click-timeout-12s' });
+      }, 12000);
+    });
+  }
+
   // v0.18.0：原 executeSayhiAction(uid, action) 简化为 executeMarkUnsuitable(uid)
   //   v0.14.0-pre 原本支持 action='request-resume' 走老路径，
   //   v0.17.1.1 起符合决策已改走 executeGreetThenRequestResume（话术+求简历），
@@ -1034,6 +1100,7 @@
     const card = await _selectSayhiCard(uid, logs);
     if (!card) {
       result.error = '选中卡片失败（详见 logs）';
+      result.failedStep = 'find-card';  // v0.24.5：补齐 failedStep（与 executeGreetThenRequestResume 对齐）
       return result;
     }
 
@@ -1042,19 +1109,46 @@
     if (!btn) {
       _logStep(logs, 'findUnsuitableBtn', false);
       result.error = '工具栏未找到不合适按钮';
+      result.failedStep = 'find-unsuitable-btn';  // v0.22.4 · 3b：BOSS UI 改名信号 → bg 立即停整批
       return result;
     }
     _logStep(logs, 'findUnsuitableBtn', true, (btn.outerHTML || '').slice(0, 120));
-    try { btn.click(); _logStep(logs, 'clickUnsuitableBtn', true); }
-    catch (e) { _logStep(logs, 'clickUnsuitableBtn', false, String(e.message)); result.error = '点击不合适失败'; return result; }
+    // v0.24.7：用 chrome.debugger 真用户 click（isTrusted=true）
+    //   起因：HR 反馈 v0.24.6 仍 partial=true（合成 click 事件被 BOSS 拒绝业务）。
+    //   HR 确认真用户 click 直接生效，无需二级菜单。
+    //   方案：取按钮中心坐标 → 经 content → BG → chrome.debugger Input.dispatchMouseEvent
+    //   滚到可见以确保坐标在视口内
+    try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {
+      try { btn.scrollIntoView(); } catch (e2) {}
+    }
+    await new Promise(function (r) { setTimeout(r, 200); });
+    const rect = btn.getBoundingClientRect();
+    const cx = Math.round(rect.x + rect.width / 2);
+    const cy = Math.round(rect.y + rect.height / 2);
+    if (!rect.width || !rect.height || cx < 0 || cy < 0) {
+      _logStep(logs, 'realClickUnsuitableBtn', false, '按钮坐标无效 rect=' + JSON.stringify({x:rect.x,y:rect.y,w:rect.width,h:rect.height}));
+      result.error = '按钮坐标无效（可能滚动失败）';
+      result.failedStep = 'click-unsuitable-btn';
+      return result;
+    }
+    const realClickResp = await _requestRealClick(cx, cy);
+    if (!realClickResp.ok) {
+      _logStep(logs, 'realClickUnsuitableBtn', false, 'real-click failed: ' + (realClickResp.error || 'unknown'));
+      result.error = 'chrome.debugger 真点击失败: ' + (realClickResp.error || 'unknown');
+      result.failedStep = 'click-unsuitable-btn';
+      return result;
+    }
+    _logStep(logs, 'realClickUnsuitableBtn', true, { x: cx, y: cy });
     // 等左侧卡片消失（操作成功标志，按用户描述）
+    // v0.24.6：6s → 15s（HR 反馈 BOSS 后端有时刷新慢，6s 超时过严，partial=true 误判）
     const gone = await _waitFor(function () {
       return !_findSayhiCardByUid(uid);
-    }, 6000);
+    }, 15000);
     if (!gone) {
-      _logStep(logs, 'waitCardGone', false, '6s 内卡片未消失（可能 BOSS 仍在刷新，或操作未生效）');
+      _logStep(logs, 'waitCardGone', false, '15s 内卡片未消失（可能 BOSS 仍在刷新，或 click 未触发 BOSS 业务）');
       result.ok = true;  // 不算硬失败：标 partial
       result.partial = true;
+      result.failedStep = 'wait-card-gone';  // v0.22.4 · 3b：UI 未刷新，bg partial-continue
       return result;
     }
     _logStep(logs, 'waitCardGone', true);
@@ -1309,6 +1403,7 @@
     };
     if (!greetText || String(greetText).trim().length < 5) {
       result.error = '话术文本太短或缺失';
+      result.failedStep = 'validate-greet-text';  // v0.22.4 · 3b
       _logStep(logs, 'validateGreetText', false, { len: (greetText && greetText.length) || 0 });
       return result;
     }
@@ -1316,6 +1411,7 @@
     const card = await _selectSayhiCard(uid, logs);
     if (!card) {
       result.error = '选中候选人卡片失败';
+      result.failedStep = 'find-card';  // v0.22.4 · 3b：与 mark-unsuitable 共用
       return result;
     }
     // 2) 找输入框
@@ -1323,16 +1419,25 @@
     if (!editor) {
       _logStep(logs, 'findEditor', false);
       result.error = '聊天输入框 #boss-chat-editor-input 未找到（聊天面板未渲染好？）';
+      result.failedStep = 'find-editor';  // v0.22.4 · 3b：环境/DOM 渲染问题
       return result;
     }
     _logStep(logs, 'findEditor', true);
     // 3) 记发送前消息数
     const beforeCount = document.querySelectorAll('.chat-message-list .message-item').length;
     _logStep(logs, 'recordBeforeCount', true, { beforeCount: beforeCount });
-    // 4) 写话术
-    const setResult = await _setEditorText(editor, String(greetText).trim(), logs);
+    // 4) 写话术 — v0.22.4 · 3b：重试 1 次（spec §3.3·3 "话术输入失败 → 重试 1 次再失败则跳过候选人"）
+    //    第一次 _setEditorText 已含 execCommand + textContent 两路径退路；这层 retry 是整体重试
+    //    （包括 focus / delete / 重新 insertText），针对偶发 Vue v-model 不响应
+    let setResult = await _setEditorText(editor, String(greetText).trim(), logs);
     if (!setResult.ok) {
-      result.error = '输入话术失败（execCommand 和 textContent 退路都不响应 Vue v-model）';
+      _logStep(logs, 'editorInputRetry', true, { reason: '首次 _setEditorText 失败，500ms 后 retry attempt 2' });
+      await new Promise(function (r) { setTimeout(r, 500); });
+      setResult = await _setEditorText(editor, String(greetText).trim(), logs);
+    }
+    if (!setResult.ok) {
+      result.error = '输入话术失败（execCommand 和 textContent 退路都不响应 Vue v-model，已 retry 1 次）';
+      result.failedStep = 'editor-input';  // v0.22.4 · 3b：bg skip-candidate（不计 actionFailStreak）
       return result;
     }
     // 5) 找发送按钮 + 校验未 disabled
@@ -1340,11 +1445,13 @@
     if (!submitBtn) {
       _logStep(logs, 'findSubmitBtn', false);
       result.error = '未找到发送按钮';
+      result.failedStep = 'find-submit-btn';  // v0.22.4 · 3b
       return result;
     }
     if (_isSubmitDisabled(submitBtn)) {
       _logStep(logs, 'findSubmitBtn', false, '发送按钮 disabled');
       result.error = '发送按钮 disabled（话术未触发启用）';
+      result.failedStep = 'find-submit-btn';  // v0.22.4 · 3b：同 find-submit-btn 类
       return result;
     }
     _logStep(logs, 'findSubmitBtn', true);
@@ -1353,13 +1460,19 @@
       _logStep(logs, 'wouldClickSubmit', true, { text: greetText });
     } else {
       try { submitBtn.click(); _logStep(logs, 'clickSubmit', true); }
-      catch (e) { _logStep(logs, 'clickSubmit', false, String((e && e.message) || e)); result.error = '点击发送失败'; return result; }
+      catch (e) {
+        _logStep(logs, 'clickSubmit', false, String((e && e.message) || e));
+        result.error = '点击发送失败';
+        result.failedStep = 'click-submit';  // v0.22.4 · 3b
+        return result;
+      }
       // 7) 等消息出现在历史区
       const sent = await _waitForMessageSent(beforeCount, 4000);
       if (!sent) {
         _logStep(logs, 'waitMessageSent', false, '4s 内消息未出现 / 一直 pending');
         result.error = '话术发送验证失败（消息未出现在历史区）';
         result.partial = true;
+        result.failedStep = 'wait-message-sent';  // v0.22.4 · 3b：已点 submit，bg partial-continue
         return result;
       }
       _logStep(logs, 'waitMessageSent', true);
@@ -1375,12 +1488,19 @@
       _logStep(logs, 'findRequestBtn', false);
       result.error = '工具栏未找到求简历按钮';
       result.partial = !dryRun;  // 话术已发出，但求简历失败 → partial
+      result.failedStep = 'find-request-btn';  // v0.22.4 · 3b：BOSS UI 改名信号 → bg 立即停整批
       return result;
     }
     _logStep(logs, 'findRequestBtn', true);
     // 9) dryRun 检查点 2：点求简历后弹窗会出现，dryRun 也照常点（不会真发送），只跳过 confirm
     try { requestBtn.click(); _logStep(logs, 'clickRequestBtn', true); }
-    catch (e) { _logStep(logs, 'clickRequestBtn', false, String((e && e.message) || e)); result.error = '点击求简历失败'; result.partial = !dryRun; return result; }
+    catch (e) {
+      _logStep(logs, 'clickRequestBtn', false, String((e && e.message) || e));
+      result.error = '点击求简历失败';
+      result.partial = !dryRun;
+      result.failedStep = 'click-request-btn';  // v0.22.4 · 3b：bg partial-continue
+      return result;
+    }
     // 10) 等求简历确认弹窗（dialog-scope 限定 + v0.14 全文 fallback）
     //   v0.17.1.3 超时 4s → 6s：用户反馈卡在弹窗，可能渲染稍慢
     //   v0.17.1.4 多文案数组：BOSS 把弹窗标题从「请求简历」改成「索取简历」
@@ -1392,6 +1512,7 @@
       _logStep(logs, 'waitConfirmDialog', false, '6s 内未出现确认弹窗（搜索文案：请求简历 / 索取简历）');
       result.error = '未出现求简历确认弹窗';
       result.partial = !dryRun;
+      result.failedStep = 'wait-confirm-dialog';  // v0.22.4 · 3b：bg partial-continue
       return result;
     }
     _logStep(logs, 'waitConfirmDialog', true);
@@ -1402,7 +1523,16 @@
       return result;
     }
     try { confirmBtn.click(); _logStep(logs, 'clickConfirm', true); }
-    catch (e) { _logStep(logs, 'clickConfirm', false, String((e && e.message) || e)); result.error = '点击确认失败'; result.partial = true; return result; }
+    catch (e) {
+      _logStep(logs, 'clickConfirm', false, String((e && e.message) || e));
+      result.error = '点击确认失败';
+      // v0.22.4 · 3b：clickConfirm 失败语义改半成功（话术已发+求简历已点+弹窗已显示，仅最后一击失败）
+      //   与 'wait-card-gone' 对齐 (ok=true + partial=true)，bg STEP_POLICY partial-continue
+      result.ok = true;
+      result.partial = true;
+      result.failedStep = 'click-confirm';
+      return result;
+    }
     // 12) 等弹窗消失（不强求）
     //   v0.17.1.4：BOSS 改文案「请求简历」→「索取简历」，两个变体都要检测
     const gone = await _waitFor(function () {

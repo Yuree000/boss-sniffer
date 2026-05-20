@@ -29,14 +29,15 @@ test('admin.html — JD 表单含新字段 id（must-list / opt-list / jd-thresh
   assert.match(html, /id="btn-jd-preview-form"/);
 });
 
-test('admin.html — JD 列表表头改成 必要(M) / 可选(N) / 阈值(K)', () => {
+test('v0.25.0: admin.html — JD 列表 M/N/K 三列已隐藏（只保留 名称 / 操作）', () => {
   const html = read('admin/admin.html');
-  assert.match(html, /必要 \(M\)/);
-  assert.match(html, /可选 \(N\)/);
-  assert.match(html, /阈值 \(K\)/);
-  // 旧列名不存在
-  assert.doesNotMatch(html, /<th>base<\/th>/);
-  assert.doesNotMatch(html, /<th>学历<\/th>/);
+  // M/N/K 列已隐藏
+  assert.doesNotMatch(html, /<th>必要 \(M\)<\/th>/);
+  assert.doesNotMatch(html, /<th>可选 \(N\)<\/th>/);
+  assert.doesNotMatch(html, /<th>阈值 \(K\)<\/th>/);
+  // 名称 + 操作列仍在
+  assert.match(html, /<th>名称<\/th>/);
+  assert.match(html, /<th class="actions-col">操作<\/th>/);
 });
 
 test('admin.html — JD 表单 placeholder 提示新岗位（测试工程师 / AI CX）', () => {

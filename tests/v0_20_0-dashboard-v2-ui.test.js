@@ -123,15 +123,20 @@ test('v0.20.4: currentScenario() 抽象 + 4.C/D/E 用 currentScenario 而非硬�
   assert.ok(matches.length >= 4, '至少 4 处用 currentScenario()（funnel/JD/trend/drawer）');
 });
 
-test('v0.20.4: 4.C/D/E 在沟通页 scenario 时显示占位（CHAT_PLACEHOLDER_HTML）', () => {
+test('v0.23.0 · 3d：4.C/D/E 沟通页 scenario 占位已移除（events 真数据流入后自动渲染）', () => {
+  // v0.20.4 此断言锁住"沟通页 tab 显示占位"
+  // v0.23.0 · 3d 起：移除 isChatScenario() 占位早 return，让 filterEvents(scenario='chat') 自动 pick up
+  // CHAT_PLACEHOLDER_HTML 常量保留（将来可能他用），但 3 个 render 不再走 placeholder 早 return
   assert.match(dashboardJs, /const CHAT_PLACEHOLDER_HTML/);
-  // 三个 render 函数都早期 return CHAT_PLACEHOLDER_HTML
-  const jdMatch = dashboardJs.match(/function renderViewJD[\s\S]*?if \(isChatScenario\(\)\)[\s\S]*?CHAT_PLACEHOLDER_HTML/);
-  const trendMatch = dashboardJs.match(/function renderViewTrend[\s\S]*?if \(isChatScenario\(\)\)[\s\S]*?CHAT_PLACEHOLDER_HTML/);
-  const drawerMatch = dashboardJs.match(/function renderViewDrawer[\s\S]*?if \(isChatScenario\(\)\)[\s\S]*?CHAT_PLACEHOLDER_HTML/);
-  assert.ok(jdMatch, '4.C JD 分析有 isChatScenario() 占位');
-  assert.ok(trendMatch, '4.D 趋势有 isChatScenario() 占位');
-  assert.ok(drawerMatch, '4.E 抽屉有 isChatScenario() 占位');
+  // 关键反转：jd/trend/drawer 三个 render 现在 sayhi tab 时不再 placeholder 占位
+  const jdMatch = dashboardJs.match(/function renderViewJD\s*\(\s*\)\s*\{[\s\S]*?\n  \}/);
+  const trendMatch = dashboardJs.match(/function renderViewTrend\s*\(\s*\)\s*\{[\s\S]*?\n  \}/);
+  const drawerMatch = dashboardJs.match(/function renderViewDrawer\s*\(\s*\)\s*\{[\s\S]*?\n  \}/);
+  assert.ok(jdMatch && trendMatch && drawerMatch);
+  // 三个函数都不再有 "if (isChatScenario()) { ... CHAT_PLACEHOLDER_HTML ... return }" 早出口
+  [jdMatch, trendMatch, drawerMatch].forEach(function (m) {
+    assert.doesNotMatch(m[0], /if\s*\(\s*isChatScenario\(\)\s*\)\s*\{[\s\S]{0,200}CHAT_PLACEHOLDER_HTML[\s\S]{0,200}return/);
+  });
 });
 
 test('v0.20.4: funnel-tab 切换触发 renderAll（不只 renderViewFunnel）', () => {
@@ -337,9 +342,10 @@ test('admin.css 含 .condition-row.flash-highlight 黄色闪烁动画', () => {
 
 // ============ F: sidepanel 看板入口（v0.20.2 加） ============
 
-test('sidepanel.html footer 含 btn-dashboard', () => {
+test('v0.25.0: sidepanel.html 顶部 h2 含 btn-dashboard（从 footer 迁移过来）', () => {
   const sidepanelHtml = read('sidepanel/sidepanel.html');
-  assert.match(sidepanelHtml, /id="btn-dashboard">📊 看板/);
+  // v0.25.0：按钮从 footer 迁移到顶部 h2 同一行；id 不变，只是位置变 + 加了 style 属性
+  assert.match(sidepanelHtml, /id="btn-dashboard"[^>]*>📊 看板/);
 });
 
 test('sidepanel.js btn-dashboard 监听 chrome.tabs.create 打开 dashboard.html', () => {

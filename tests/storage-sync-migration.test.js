@@ -65,7 +65,13 @@ test('background.js loadConfig 改用 BossStorageSync', () => {
   const src = read('background.js');
   // v0.17.0.10 加 sayHiDom（POC A7 沟通页 DOM 扫描配置）
   // v0.17.1.0 加 autoAction（评估「符合」→ 自动输入话术 + 求简历）
-  assert.match(src, /BossStorageSync\.migrateFromLocal\(\['llm', 'sayHi', 'sayHiDom', 'autoAction'\]/);
+  // v0.22.3 加 sayhiBatch（Phase 2·2d 沟通页 K/N 阈值）
+  // 不锁全数组，仅断言关键节都在
+  const m = src.match(/BossStorageSync\.migrateFromLocal\(\[([^\]]+)\]/);
+  assert.ok(m, '未找到 migrateFromLocal');
+  ['llm', 'sayHi', 'sayHiDom', 'autoAction'].forEach(function (k) {
+    assert.match(m[0], new RegExp("'" + k + "'"));
+  });
 });
 
 test('background.js importScripts 含 storage-sync.js 且在 jd-templates 之前', () => {

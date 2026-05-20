@@ -558,9 +558,9 @@ async function loadAll() {
   $('sayhidom-proactive-fetch').checked = !!sayHiDom.proactiveFetchEnabled;
 
   // v0.17.1.3：批量评估后自动求简历（单评永不自动）
+  // v0.24.2：enabledBatchEval / autoMarkUnsuitable / dryRun 不再在 admin 渲染
+  //   迁移：前两者由 sidepanel 沟通页 control-bar 现场决定；dryRun 永久关闭无 UI
   const autoAction = res.config.autoAction || DEFAULTS.autoAction;
-  $('auto-action-enabled').checked = !!autoAction.enabledBatchEval;
-  $('auto-action-dry-run').checked = !!autoAction.dryRun;
   $('auto-action-cooldown-min').value = autoAction.actionCooldownMinMs != null ? autoAction.actionCooldownMinMs : DEFAULTS.autoAction.actionCooldownMinMs;
   $('auto-action-cooldown-max').value = autoAction.actionCooldownMaxMs != null ? autoAction.actionCooldownMaxMs : DEFAULTS.autoAction.actionCooldownMaxMs;
 
@@ -606,16 +606,18 @@ function collectSayHiDomPatch() {
 }
 
 // v0.17.1.3：批量评估后自动求简历配置（单评永不自动）
+// v0.24.2：admin 只 patch cooldown 参数 + 强制 dryRun=false；
+//   enabledBatchEval / autoMarkUnsuitable 由 sidepanel 沟通页 control-bar 各自的
+//   SET_CONFIG_SECTION 调用维护（merge 语义不被覆盖）。
 function collectAutoActionPatch() {
   const cMin = parseInt($('auto-action-cooldown-min').value, 10);
   const cMax = parseInt($('auto-action-cooldown-max').value, 10);
   const cMinSafe = isNaN(cMin) ? DEFAULTS.autoAction.actionCooldownMinMs : Math.max(0, cMin);
   const cMaxSafe = isNaN(cMax) ? DEFAULTS.autoAction.actionCooldownMaxMs : Math.max(cMinSafe, cMax);
   return {
-    enabledBatchEval: !!$('auto-action-enabled').checked,
-    dryRun: !!$('auto-action-dry-run').checked,
     actionCooldownMinMs: cMinSafe,
-    actionCooldownMaxMs: cMaxSafe
+    actionCooldownMaxMs: cMaxSafe,
+    dryRun: false  // v0.24.2：试跑模式永久关闭
   };
 }
 
@@ -698,9 +700,8 @@ $('btn-reset').addEventListener('click', function () {
   $('sayhidom-cooldown-max').value = DEFAULTS.sayHiDom.cooldownMaxMs;
   $('sayhidom-proactive-fetch').checked = DEFAULTS.sayHiDom.proactiveFetchEnabled;
   $('sayhi-rest-minutes').value = DEFAULTS.sayHi.restMinutes.join(',');
-  // v0.17.1.3 autoAction 重置（key 已改为 enabledBatchEval）
-  $('auto-action-enabled').checked = DEFAULTS.autoAction.enabledBatchEval;
-  $('auto-action-dry-run').checked = DEFAULTS.autoAction.dryRun;
+  // v0.17.1.3 autoAction 重置
+  // v0.24.2：enabledBatchEval / autoMarkUnsuitable / dryRun 已迁出 admin，此处不再重置
   $('auto-action-cooldown-min').value = DEFAULTS.autoAction.actionCooldownMinMs;
   $('auto-action-cooldown-max').value = DEFAULTS.autoAction.actionCooldownMaxMs;
   setStatus('已恢复表单为默认值，点击「保存所有更改」生效', '');
@@ -948,16 +949,11 @@ async function loadJDList() {
     $('jd-empty').style.display = 'none';
     $('jd-table').style.display = '';
     list.forEach(function (t) {
-      const must = Array.isArray(t.mustConditions) ? t.mustConditions : [];
-      const opt = Array.isArray(t.optionalConditions) ? t.optionalConditions : [];
-      const K = Number(t.optionalThreshold) || 0;
+      // v0.25.0：删 M/N/K 三列（HR 反馈列表不需要看这些数字）
       const tr = document.createElement('tr');
       if (t.jdId === cur) tr.classList.add('jd-row-current');
       tr.innerHTML =
         '<td>' + escapeHtml(t.name) + '</td>' +
-        '<td>' + must.length + '</td>' +
-        '<td>' + opt.length + '</td>' +
-        '<td>' + K + '</td>' +
         '<td class="actions-col">' +
           '<button class="btn-jd-preview" data-id="' + escapeHtml(t.jdId) + '">预览</button> ' +
           '<button class="btn-jd-edit" data-id="' + escapeHtml(t.jdId) + '">编辑</button> ' +
@@ -1048,6 +1044,88 @@ function collectConditions(listId, prefix) {
   return out;
 }
 
+// v0.25.1：删 v0.21.0 · Phase 1·1b 沟通职位别名 CRUD 整段（路由改用 JD.name 严格相等）
+
+// === v0.25.2：JD 内嵌话术模板 CRUD ===
+// 每行：[默认 radio] [名称 input] [text textarea] [× 删除]
+// 一个 JD 至多一个默认（radio name 复用 + 选中即同步 hidden defaultGreetTemplateId）
+
+let _currentEditCustomPrompt = null;  // 编辑时缓存 JD 的 customPrompt，保存时一并写回
+
+function makeJdGreetTemplateRow(g, isDefault) {
+  const row = document.createElement('div');
+  row.className = 'condition-row';
+  row.dataset.greetId = g && g.id ? g.id : self.BossJD.genGreetTemplateId();
+
+  const radio = document.createElement('input');
+  radio.type = 'radio';
+  radio.name = 'jd-greet-default';
+  radio.title = '设为本 JD 的默认话术';
+  radio.checked = !!isDefault;
+  radio.style.cssText = 'flex:0 0 auto;margin-right:4px;';
+  row.appendChild(radio);
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.value = (g && g.name) || '';
+  nameInput.placeholder = '话术名（如：寒暄 / 自我介绍）';
+  nameInput.style.cssText = 'flex:0 0 35%;';
+  row.appendChild(nameInput);
+
+  const textInput = document.createElement('textarea');
+  textInput.rows = 2;
+  textInput.value = (g && g.text) || '';
+  textInput.placeholder = '话术正文（候选人将收到这条独立消息）';
+  textInput.style.cssText = 'flex:1;font-family:inherit;font-size:13px;padding:4px 8px;border:1px solid #d0d7de;border-radius:4px;resize:vertical;';
+  row.appendChild(textInput);
+
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'condition-del';
+  del.textContent = '×';
+  del.title = '删除此话术';
+  del.addEventListener('click', function () {
+    row.parentNode && row.parentNode.removeChild(row);
+  });
+  row.appendChild(del);
+
+  return row;
+}
+
+function renderJdGreetTemplates(greetTemplates, defaultId) {
+  const container = $('jd-greet-templates-list');
+  container.innerHTML = '';
+  const list = (greetTemplates && greetTemplates.length) ? greetTemplates : [];
+  if (!list.length) {
+    // 默认空 1 行
+    container.appendChild(makeJdGreetTemplateRow(null, true));
+    return;
+  }
+  list.forEach(function (g) {
+    container.appendChild(makeJdGreetTemplateRow(g, g.id === defaultId));
+  });
+}
+
+function collectJdGreetTemplates() {
+  const container = $('jd-greet-templates-list');
+  const rows = container.querySelectorAll('.condition-row');
+  const out = [];
+  let defaultId = '';
+  rows.forEach(function (row) {
+    const id = row.dataset.greetId;
+    const radio = row.querySelector('input[type="radio"]');
+    const inputs = row.querySelectorAll('input[type="text"], textarea');
+    const name = inputs[0] ? String(inputs[0].value || '').trim() : '';
+    const text = inputs[1] ? String(inputs[1].value || '').trim() : '';
+    if (!name && !text) return;  // 全空行跳过
+    out.push({ id: id, name: name, text: text });
+    if (radio && radio.checked) defaultId = id;
+  });
+  // 若 HR 没选默认且有话术，自动取首条为默认
+  if (!defaultId && out.length) defaultId = out[0].id;
+  return { greetTemplates: out, defaultGreetTemplateId: defaultId };
+}
+
 function openJDFormForNew() {
   $('jd-form-title').textContent = '新建 JD 模板';
   $('jd-edit-id').value = '';
@@ -1056,6 +1134,9 @@ function openJDFormForNew() {
   renderConditionList('must-list', 'M', [{ text: '' }]);
   renderConditionList('opt-list', 'O', [{ text: '' }]);
   $('jd-threshold').value = '0';
+  // v0.25.2：默认 1 个空话术行
+  renderJdGreetTemplates([], '');
+  _currentEditCustomPrompt = null;  // 新建时 customPrompt 默认 null
   $('jd-form-status').textContent = '';
   $('jd-form-status').className = 'test-result';
   $('jd-form').style.display = 'block';
@@ -1075,6 +1156,9 @@ async function openJDFormForEdit(jdId) {
   renderConditionList('must-list', 'M', t.mustConditions || []);
   renderConditionList('opt-list', 'O', t.optionalConditions || []);
   $('jd-threshold').value = String(t.optionalThreshold || 0);
+  // v0.25.2：回显 greetTemplates + customPrompt
+  renderJdGreetTemplates(t.greetTemplates || [], t.defaultGreetTemplateId || '');
+  _currentEditCustomPrompt = (typeof t.customPrompt === 'string' && t.customPrompt) ? t.customPrompt : null;
   $('jd-form-status').textContent = '';
   $('jd-form-status').className = 'test-result';
   $('jd-form').style.display = 'block';
@@ -1096,12 +1180,17 @@ function buildJdFromForm() {
     .filter(function (c) { return c.text; })
     .map(function (c) { return { id: self.BossJD.genConditionId('opt'), text: c.text }; });
   const K = parseInt($('jd-threshold').value || '0', 10);
+  const greetCollected = collectJdGreetTemplates();
   return {
     jdId: $('jd-edit-id').value || undefined,
     name: name,
     mustConditions: must,
     optionalConditions: opt,
-    optionalThreshold: Number.isInteger(K) && K >= 0 ? K : 0
+    optionalThreshold: Number.isInteger(K) && K >= 0 ? K : 0,
+    // v0.25.2：内嵌话术 + customPrompt
+    greetTemplates: greetCollected.greetTemplates,
+    defaultGreetTemplateId: greetCollected.defaultGreetTemplateId,
+    customPrompt: _currentEditCustomPrompt
   };
 }
 
@@ -1139,6 +1228,12 @@ $('btn-add-must').addEventListener('click', function () {
 $('btn-add-opt').addEventListener('click', function () {
   const idx = $('opt-list').querySelectorAll('.condition-row').length + 1;
   $('opt-list').appendChild(makeConditionRow('O', idx));
+});
+// v0.25.1：删添加沟通职位别名行 handler（功能已废弃）
+
+// v0.25.2：添加 JD 内嵌话术模板行
+$('btn-add-jd-greet').addEventListener('click', function () {
+  $('jd-greet-templates-list').appendChild(makeJdGreetTemplateRow(null, false));
 });
 
 // 表单内"预览 prompt" — 从当前表单状态构造临时 jd，不存 storage
@@ -1279,12 +1374,22 @@ async function saveGreetForm() {
   }
 }
 
-$('btn-greet-new').addEventListener('click', openGreetFormForNew);
-$('btn-greet-cancel').addEventListener('click', closeGreetForm);
-$('btn-greet-save').addEventListener('click', saveGreetForm);
-$('greet-text').addEventListener('input', updateGreetCharCount);
+// v0.25.2：admin 话术管理 section 删除（话术内嵌 JD），4 个 handler 绑定也撤
+//   函数定义 openGreetFormForNew / saveGreetForm / loadGreetList / updateGreetCharCount 保留供调试
+//   实际 DOM 元素已不存在，运行时绑定会抛 TypeError（$('btn-greet-new') 返回 null）
+// $('btn-greet-new').addEventListener('click', openGreetFormForNew);
+// $('btn-greet-cancel').addEventListener('click', closeGreetForm);
+// $('btn-greet-save').addEventListener('click', saveGreetForm);
+// $('greet-text').addEventListener('input', updateGreetCharCount);
 
 // ============ 预览 prompt（按钮触发） ============
+// v0.25.2：加「修改」+「保存自定义」+「恢复默认」按钮（HR 可手工覆盖 prompt-builder 生成的 prompt）
+//   修改后保存到 jd.customPrompt；judge.js 评估时优先使用 customPrompt（v0.25.2 已接入）
+//   恢复默认 = 清空 jd.customPrompt，下次评估回到 prompt-builder.build(jd)
+
+let _currentPreviewJdId = null;       // 当前预览的 JD ID
+let _currentPreviewDefault = '';      // 当前 JD 的 prompt-builder 自动生成版本
+
 async function openPromptPreviewByJdId(jdId) {
   if (!self.BossJD || !self.BossPromptBuilder) {
     alert('依赖模块未加载');
@@ -1295,35 +1400,132 @@ async function openPromptPreviewByJdId(jdId) {
     alert('该 JD 模板不存在或已被删除');
     return;
   }
-  let prompt;
+  let defaultPrompt;
   try {
-    prompt = self.BossPromptBuilder.build(t);
+    defaultPrompt = self.BossPromptBuilder.build(t);
   } catch (e) {
-    prompt = '✗ prompt 拼装失败：' + e.message;
+    defaultPrompt = '✗ prompt 拼装失败：' + e.message;
   }
-  openPromptModal('预览 SYSTEM_PROMPT — ' + (t.name || '未命名'), prompt);
+  _currentPreviewJdId = jdId;
+  _currentPreviewDefault = defaultPrompt;
+  // 若 JD 有 customPrompt → 显示 custom 版本 + status 提示
+  const showCustom = typeof t.customPrompt === 'string' && t.customPrompt.trim();
+  openPromptModal('预览 SYSTEM_PROMPT — ' + (t.name || '未命名'),
+                   showCustom ? t.customPrompt : defaultPrompt,
+                   !!showCustom);
 }
 
-function openPromptModal(title, content) {
+function openPromptModal(title, content, isCustom) {
   $('prompt-modal-title').textContent = title;
   $('prompt-modal-content').textContent = content;
+  $('prompt-modal-content').classList.remove('hidden');
+  $('prompt-modal-edit').classList.add('hidden');
+  $('prompt-modal-edit-toggle').textContent = '修改';
+  $('prompt-modal-save').classList.add('hidden');
+  // 恢复默认按钮：仅在有自定义时才显示
+  if (isCustom) {
+    $('prompt-modal-reset').classList.remove('hidden');
+    $('prompt-modal-status').textContent = '⚠ 当前显示 HR 自定义版本（已覆盖默认）。点「恢复默认」清空，或「修改」继续编辑。';
+    $('prompt-modal-status').style.color = '#b08000';
+  } else {
+    $('prompt-modal-reset').classList.add('hidden');
+    $('prompt-modal-status').textContent = '当前显示自动生成的默认版本。点「修改」可手工编辑后保存覆盖。';
+    $('prompt-modal-status').style.color = '#666';
+  }
   $('prompt-modal').classList.remove('hidden');
 }
 
 function closePromptPreview() {
   $('prompt-modal').classList.add('hidden');
+  _currentPreviewJdId = null;
+  _currentPreviewDefault = '';
 }
 
 $('prompt-modal-close').addEventListener('click', closePromptPreview);
 $('prompt-modal').querySelector('.modal-overlay').addEventListener('click', closePromptPreview);
 $('prompt-modal-copy').addEventListener('click', async function () {
-  const text = $('prompt-modal-content').textContent;
+  // 复制当前显示的内容（自定义 / 默认 / 编辑中的 textarea 都用这个出口）
+  const editEl = $('prompt-modal-edit');
+  const text = editEl.classList.contains('hidden')
+    ? $('prompt-modal-content').textContent
+    : editEl.value;
   try {
     await navigator.clipboard.writeText(text);
     $('prompt-modal-copy').textContent = '✓ 已复制';
     setTimeout(function () { $('prompt-modal-copy').textContent = '复制全文'; }, 1500);
   } catch (e) {
     alert('复制失败：' + e.message);
+  }
+});
+
+// v0.25.2：「修改」按钮 — 切换 pre 显示 / textarea 编辑模式
+$('prompt-modal-edit-toggle').addEventListener('click', function () {
+  const preEl = $('prompt-modal-content');
+  const editEl = $('prompt-modal-edit');
+  const saveBtn = $('prompt-modal-save');
+  const toggleBtn = $('prompt-modal-edit-toggle');
+  if (editEl.classList.contains('hidden')) {
+    // 进入编辑模式：把 pre 内容 copy 到 textarea
+    editEl.value = preEl.textContent;
+    preEl.classList.add('hidden');
+    editEl.classList.remove('hidden');
+    saveBtn.classList.remove('hidden');
+    toggleBtn.textContent = '取消修改';
+    $('prompt-modal-status').textContent = '编辑模式：修改后点「保存自定义」写入 JD（评估时将用此版本）。';
+    $('prompt-modal-status').style.color = '#2467f0';
+  } else {
+    // 退出编辑模式（取消）
+    preEl.classList.remove('hidden');
+    editEl.classList.add('hidden');
+    saveBtn.classList.add('hidden');
+    toggleBtn.textContent = '修改';
+    $('prompt-modal-status').textContent = '已取消编辑（未保存）。';
+    $('prompt-modal-status').style.color = '#666';
+  }
+});
+
+// v0.25.2：「保存自定义」按钮 — 写入 jd.customPrompt
+$('prompt-modal-save').addEventListener('click', async function () {
+  if (!_currentPreviewJdId) { alert('未选中 JD'); return; }
+  const newPrompt = String($('prompt-modal-edit').value || '').trim();
+  if (!newPrompt) {
+    alert('prompt 不能为空（若要回到默认请点「恢复默认」）');
+    return;
+  }
+  try {
+    const t = await self.BossJD.getTemplate(_currentPreviewJdId);
+    if (!t) { alert('JD 已被删除'); return; }
+    t.customPrompt = newPrompt;
+    await self.BossJD.saveTemplate(t);
+    $('prompt-modal-status').textContent = '✓ 已保存。下次评估将用此自定义版本。';
+    $('prompt-modal-status').style.color = '#2a6f49';
+    // 退出编辑模式，显示新内容
+    $('prompt-modal-content').textContent = newPrompt;
+    $('prompt-modal-content').classList.remove('hidden');
+    $('prompt-modal-edit').classList.add('hidden');
+    $('prompt-modal-save').classList.add('hidden');
+    $('prompt-modal-edit-toggle').textContent = '修改';
+    $('prompt-modal-reset').classList.remove('hidden');
+  } catch (e) {
+    alert('保存失败：' + e.message);
+  }
+});
+
+// v0.25.2：「恢复默认」按钮 — 清空 jd.customPrompt
+$('prompt-modal-reset').addEventListener('click', async function () {
+  if (!_currentPreviewJdId) { alert('未选中 JD'); return; }
+  if (!confirm('确认恢复默认？\n\n将清空本 JD 的自定义 prompt，下次评估回到自动生成的版本。')) return;
+  try {
+    const t = await self.BossJD.getTemplate(_currentPreviewJdId);
+    if (!t) { alert('JD 已被删除'); return; }
+    t.customPrompt = null;
+    await self.BossJD.saveTemplate(t);
+    $('prompt-modal-content').textContent = _currentPreviewDefault;
+    $('prompt-modal-status').textContent = '✓ 已恢复默认。当前显示自动生成版本。';
+    $('prompt-modal-status').style.color = '#2a6f49';
+    $('prompt-modal-reset').classList.add('hidden');
+  } catch (e) {
+    alert('恢复失败：' + e.message);
   }
 });
 
@@ -1335,7 +1537,7 @@ $('btn-open-dashboard').addEventListener('click', function () {
 // ============ 启动 ============
 loadAll();
 loadJDList();
-loadGreetList();
+// v0.25.2：删 loadGreetList 启动调用（话术管理 section 已删）
 
 // ===== v0.17.0：数据导入 / 导出 =====
 const DB_NAME = 'boss-sniffer-db';
@@ -1592,3 +1794,45 @@ if (fileImportJd) {
     bind();
   }
 })();
+
+// ============ v0.22.5 · Phase 3·3c 前置：IDB 备份按钮 ============
+// HR 可选在 schema 升级前一键导出全 store JSON 作回滚兜底
+// 复用 sidepanel diag bundle 的 Blob.click 下载模式
+$('btn-export-idb-backup').addEventListener('click', async function () {
+  const btn = $('btn-export-idb-backup');
+  const status = $('idb-backup-status');
+  function setStatus(text, color) {
+    if (!status) return;
+    status.textContent = text || '';
+    status.style.color = color || '#666';
+  }
+  btn.disabled = true;
+  setStatus('⏳ 正在读取 IDB...', '#666');
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'EXPORT_IDB_BUNDLE' });
+    if (!resp || !resp.ok) throw new Error((resp && resp.error) || '未知错误');
+    const bundle = resp.bundle;
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const now = new Date();
+    const stamp = now.getFullYear() +
+      String(now.getMonth() + 1).padStart(2, '0') +
+      String(now.getDate()).padStart(2, '0') + '-' +
+      String(now.getHours()).padStart(2, '0') +
+      String(now.getMinutes()).padStart(2, '0');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'boss-sniffer-idb-backup-' + stamp + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    const totalRows = Object.keys(bundle.counts || {}).reduce(function (s, k) { return s + (bundle.counts[k] || 0); }, 0);
+    setStatus('✅ 已导出 ' + totalRows + ' 行（dbVersion=' + bundle.dbVersion + '）', '#0a0');
+  } catch (err) {
+    setStatus('❌ 导出失败：' + ((err && err.message) || err), '#c33');
+    console.error('[BOSS-Sniffer admin] export IDB backup failed:', err);
+  } finally {
+    btn.disabled = false;
+  }
+});

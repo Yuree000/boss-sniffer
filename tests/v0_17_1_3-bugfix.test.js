@@ -40,13 +40,15 @@ test('admin.js DEFAULTS.autoAction.enabledBatchEval 替代 enabledSingleEval', (
   assert.match(adminJs, /enabledBatchEval:\s*false/);
 });
 
-test('admin.html banner 文案说明「单评始终手动 / 仅批量自动」', () => {
-  assert.match(adminHtml, /仅批量评估自动/);
-  assert.match(adminHtml, /单评.*手动|单评.*手动点 🎯|单评（点单个候选人 ⚡）永远不会自动求简历/);
+// v0.24.2：admin 删了 enabledBatchEval / dryRun 两个 checkbox + 配套 banner 文案
+//   迁移到 sidepanel 沟通页 control-bar；旧 banner 文案已撤
+test('v0.24.2: admin.html 不再含旧 banner「仅批量评估自动 / 单评始终手动」文案', () => {
+  assert.doesNotMatch(adminHtml, /仅批量评估自动/);
 });
 
-test('admin.html 复选框 label 改为「启用批量评估自动求简历」', () => {
-  assert.match(adminHtml, /启用批量评估自动求简历/);
+test('v0.24.2: admin.html 不再含「启用批量评估自动求简历」label', () => {
+  assert.doesNotMatch(adminHtml, /启用批量评估自动求简历/);
+  // 旧版本残留也不应在
   assert.doesNotMatch(adminHtml, /启用单评自动求简历/);
 });
 

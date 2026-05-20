@@ -195,18 +195,13 @@ test('build — 不暴露 estimateTokens 函数（用户要求整产品不出现
   assert.equal(PB.estimateTokens, undefined);
 });
 
-// v0.17.0.10：地址/base 类条件特殊判定细则
-test('build — 决策规则含"地址 / base 类条件"特殊判定细则', () => {
+// v0.24.0：删 v0.17.0.10 地址/base 类细则 + v0.23.1 学历类细则
+// 范式转变：从"字段查表心智"转"语义综合心智"，新通则覆盖所有维度
+test('v0.24.0: build — 删除旧「地址 / base 类条件」细则段（字段查表心智已废弃）', () => {
   const PB = loadBuilder();
   const prompt = PB.build(QA_JD);
-  assert.match(prompt, /特殊判定细则 — 地址 \/ base 类条件/);
-  // 必须明确只看 basic.city 和 expectation.cityName
-  assert.match(prompt, /candidate\.basic\.city/);
-  assert.match(prompt, /candidate\.expectation\.cityName/);
-  // 必须明确不看 workHistory[].company 地名
-  assert.match(prompt, /不看.*workHistory\[\]\.company/);
-  // 必须明确不看 chatHistory 推断
-  assert.match(prompt, /不看.*chatHistory/);
+  assert.doesNotMatch(prompt, /特殊判定细则 — 地址 \/ base 类条件/);
+  assert.doesNotMatch(prompt, /特殊判定细则 — 学历类条件/);
 });
 
 // v0.17.0.10：输出强约束（治"输出不含 JSON 对象"失败）
@@ -230,4 +225,77 @@ test('build — reason 字段写法约束（M{n}.value 开头 + 禁 hedge）', (
   assert.match(prompt, /禁止使用.*百分比/);
   assert.match(prompt, /推断 70%/);
   assert.match(prompt, /缺少地址信息/);
+});
+
+// v0.24.0：综合判定原则段（替代旧地址/学历细则的新心智）
+// 范式转变：从"字段查表"心智 → "语义综合"心智
+//   旧：prompt 硬编码"学历类查 6 个字段、地址类查 2 个字段"
+//   新：LLM 识别 must 文本涉及的语义维度 → 扫遍全部字段 → 三态判定
+// 优点：未来新增 JD/维度（语言/工龄/年龄/学校/行业等）0 改 prompt
+test('v0.24.0: build — 综合判定原则段存在 + 三步法明示', () => {
+  const PB = loadBuilder();
+  const prompt = PB.build(QA_JD);
+  assert.match(prompt, /综合判定原则（覆盖通则，适用所有 must \/ optional 条件）/);
+  // 心智反字段查表
+  assert.match(prompt, /不要按字段名查表/);
+  // 三步法
+  assert.match(prompt, /1\. 识别 must 文本涉及的语义维度/);
+  assert.match(prompt, /2\. 扫遍 candidate 所有字段/);
+  assert.match(prompt, /3\. 按以下三态判定 m\.value/);
+});
+
+test('v0.24.0: build — 三态判定逻辑（true / false / unknown）明示', () => {
+  const PB = loadBuilder();
+  const prompt = PB.build(QA_JD);
+  assert.match(prompt, /任一字段含 must 关键词、同义表达或更优表达 → true/);
+  assert.match(prompt, /任一字段含明确反证.*→ false/);
+  assert.match(prompt, /仅有模糊暗示 \/ 全无该维度信息 → unknown/);
+});
+
+test('v0.24.0: build — 信息源优先级在原则段内重申', () => {
+  const PB = loadBuilder();
+  const prompt = PB.build(QA_JD);
+  // 优先级顺序在通则段就有，但 v0.24.0 原则段三步法也复述一遍（强化）
+  assert.match(prompt, /chatHistory > domDetail > 简历字段 > bossSignals/);
+});
+
+// few-shot 示例选 "销售经验" + "懂日语" 而非"学历"/"城市"
+// 故意避开已知踩坑维度，让 LLM 学方法论而非补丁
+test('v0.24.0: build — 示例 1 销售经验（含 4 个子情景）', () => {
+  const PB = loadBuilder();
+  const prompt = PB.build(QA_JD);
+  assert.match(prompt, /示例 1 · must "5 年以上销售经验"/);
+  // 4 个子情景：workHistory 含销售 / bossSignals 含同样 / 全是行政 / 全空
+  assert.match(prompt, /销售总监 2017-2024.*→ true/);
+  assert.match(prompt, /非简历字段也算强证据/);
+  assert.match(prompt, /workHistory 全是行政岗 → false/);
+  assert.match(prompt, /工作经历类字段全空 → unknown/);
+});
+
+test('v0.24.0: build — 示例 2 懂日语（含 chatHistory 自述强证据）', () => {
+  const PB = loadBuilder();
+  const prompt = PB.build(QA_JD);
+  assert.match(prompt, /示例 2 · must "懂日语"/);
+  // 强证据形式：N1 / 专业 / 工作年限 / 候选人自述
+  assert.match(prompt, /日语 N1.*日语专业.*在日本工作/);
+  // 候选人自述算强证据（覆盖之前 chatHistory 优先级被埋没的盲点）
+  assert.match(prompt, /chatHistory 候选人说.*我可以用日语沟通.*→ true（候选人自述算强证据）/);
+  // 反例：在日企不等于会日语
+  assert.match(prompt, /在日企不等于会日语/);
+});
+
+// 「不能反推」铁律 — 替代旧地址类排他规则，但泛化到所有维度
+test('v0.24.0: build — 「不能反推」铁律段 + 5 条具体反推案例', () => {
+  const PB = loadBuilder();
+  const prompt = PB.build(QA_JD);
+  assert.match(prompt, /「不能反推」铁律/);
+  assert.match(prompt, /某个事实暗示另一个事实，但不蕴含 → 不算证据/);
+  // 5 条不同维度的反推例子（年龄/地点/技术/应届/学校）
+  assert.match(prompt, /年龄 26 岁 ⇏ 学历是本科/);
+  assert.match(prompt, /workHistory 公司在广州 ⇏ 候选人 base 在广州/);
+  assert.match(prompt, /在 SAP 公司工作 ⇏ 候选人会 SAP/);
+  assert.match(prompt, /应届生 ⇏ 学历是本科/);
+  assert.match(prompt, /学校名声好 ⇏ 个人能力强/);
+  // 一句话泛化收尾
+  assert.match(prompt, /看起来像但不蕴含.*判 unknown 不要硬猜/);
 });

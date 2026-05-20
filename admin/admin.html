@@ -155,13 +155,11 @@
       <p class="hint">岗位画像模板（增删改查）。当前选中由侧边栏控制；admin 仅展示，列表中标记 ● 的为侧边栏选中项。</p>
 
       <div class="jd-list-wrap">
+        <!-- v0.25.0：隐藏 M/N/K 列（HR 反馈列表不需要看这些数字，配置时仍可改） -->
         <table class="jd-table" id="jd-table">
           <thead>
             <tr>
               <th>名称</th>
-              <th>必要 (M)</th>
-              <th>可选 (N)</th>
-              <th>阈值 (K)</th>
               <th class="actions-col">操作</th>
             </tr>
           </thead>
@@ -179,10 +177,18 @@
         <h3 id="jd-form-title">新建 JD 模板</h3>
         <input id="jd-edit-id" type="hidden">
 
+        <!-- v0.25.1：JD 名称即沟通页匹配 key，加 hint 提示必须与 BOSS 一致 -->
         <div class="form-row">
           <label for="jd-name">名称 <span class="required">*</span></label>
           <input id="jd-name" type="text" placeholder="如：测试工程师 / AI CX">
+          <span class="field-hint" style="display:block;margin-top:4px;color:#a33;">
+            ⚠ 必须与 BOSS 端的「沟通职位」名称<strong>完全一致</strong>才能匹配。
+            沟通页扫到候选人时按此严格相等查找对应 JD；不一致则候选人 unrouted 跳过评估。
+          </span>
         </div>
+
+        <!-- v0.25.1：删 v0.21.0 · Phase 1·1b 沟通职位别名 CRUD 整段 -->
+
 
         <div class="form-row">
           <label>必要条件 <span class="field-hint">任一不满足或信息不足 → pass</span></label>
@@ -201,6 +207,13 @@
           <input id="jd-threshold" type="number" min="0" placeholder="0">
         </div>
 
+        <!-- v0.25.2：JD 内嵌话术模板（多条 + 选默认） -->
+        <div class="form-row">
+          <label>话术模板 <span class="field-hint">评估为「符合」自动求简历前发的寒暄消息。可加多条，选一条为默认；自动操作时用默认话术。</span></label>
+          <div id="jd-greet-templates-list" class="condition-list"></div>
+          <button id="btn-add-jd-greet" type="button" class="secondary condition-add-btn">+ 添加话术模板</button>
+        </div>
+
         <div class="actions">
           <button id="btn-jd-save" class="primary">保存</button>
           <button id="btn-jd-cancel" class="secondary">取消</button>
@@ -210,53 +223,13 @@
       </div>
     </section>
 
-    <!-- ============ 话术模板管理（v0.17.1.0） ============ -->
-    <section class="card">
-      <h2>话术模板管理</h2>
-      <p class="hint">评估「符合」自动求简历前，先发的寒暄消息模板。HR 可在 sidepanel 选当前用哪条；text 至少 5 字符。</p>
+    <!-- v0.25.2：「话术模板管理」section 整段删除 — 话术改为内嵌在 JD 模板内（每 JD 自带话术 + 选默认） -->
 
-      <div class="jd-list-wrap">
-        <table class="jd-table" id="greet-table">
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>话术正文（前 50 字）</th>
-              <th>字符数</th>
-              <th class="actions-col">操作</th>
-            </tr>
-          </thead>
-          <tbody id="greet-list-body"></tbody>
-        </table>
-        <div id="greet-empty" class="jd-empty" style="display:none;">暂无话术模板，点击下方"新建"。</div>
-      </div>
-
-      <div class="actions">
-        <button id="btn-greet-new" class="primary">+ 新建话术</button>
-      </div>
-
-      <!-- 编辑表单（默认隐藏） -->
-      <div id="greet-form" class="jd-form" style="display:none;">
-        <h3 id="greet-form-title">新建话术模板</h3>
-        <input id="greet-edit-id" type="hidden">
-
-        <div class="form-row">
-          <label for="greet-name">名称 <span class="required">*</span></label>
-          <input id="greet-name" type="text" placeholder="如：技术岗-寒暄 / 销售岗-自我介绍">
-        </div>
-
-        <div class="form-row">
-          <label for="greet-text">话术正文 <span class="required">*</span> <span class="field-hint">最少 5 字符；候选人会收到这条独立消息，然后才是 BOSS 自动的「方便发一份你的简历过来吗？」</span></label>
-          <textarea id="greet-text" rows="4" style="width:100%;font-family:inherit;font-size:13px;padding:8px;border:1px solid #d0d7de;border-radius:4px;resize:vertical;" placeholder="您好，看了您的简历，跟我们这边的岗位挺契合，方便聊聊吗？"></textarea>
-          <span id="greet-char-count" class="field-hint">0 字符</span>
-        </div>
-
-        <div class="actions">
-          <button id="btn-greet-save" class="primary">保存</button>
-          <button id="btn-greet-cancel" class="secondary">取消</button>
-          <span id="greet-form-status" class="test-result"></span>
-        </div>
-      </div>
-    </section>
+    <!-- v0.25.2：「数据导入/导出」+「自动打招呼」+「危险操作」全部包到折叠区（HR 通常无需打开） -->
+    <details class="admin-advanced-fold" style="margin-bottom:16px;">
+      <summary style="cursor:pointer;padding:12px 16px;background:#f5f5f5;border:1px solid #ddd;border-radius:6px;font-size:14px;font-weight:500;color:#555;user-select:none;">
+        🔧 高级 / 调试设置
+      </summary>
 
     <!-- ============ 数据导入 / 导出 ============ -->
     <!-- v0.17.0-prod：FSA 备份链路未完工，「从备份目录导入历史数据」按钮在 admin.js 里隐藏 -->
@@ -307,29 +280,11 @@
       </div>
       <span class="field-hint" style="margin-top:-8px; display:block;">打满 N 人后强制休息 [min, max] 分钟，让账号看起来像真人</span>
 
-      <!-- v0.17.1.3 评估「符合」→ 自动求简历（批量专属，单评始终手动） -->
-      <h3 style="margin-top:20px;">评估后自动求简历（v0.17.1.3）</h3>
-      <div class="banner warn" style="background:#fff5e6;border-color:#e88a00;color:#7a4f0f;">
-        <strong>⚠️ 仅批量评估自动 / 单评始终手动</strong>：开启后，批量评估时所有判为「符合」的候选人会自动：
-        ① 选中卡片 ② 输入当前话术 ③ 点求简历 ④ 弹窗确定。
-        <strong>单评（点单个候选人 ⚡）永远不会自动求简历</strong>——HR 看到结果后自己点 🎯 决定。
-        默认 OFF；跑通 1 人确认安全后再开。
-      </div>
-
-      <div class="form-row">
-        <label>
-          <input id="auto-action-enabled" type="checkbox" style="margin-right:6px;">
-          <strong>启用批量评估自动求简历</strong>
-        </label>
-        <span class="field-hint">关闭时批量评估也只评估不操作；HR 看完每张卡片手动点 🎯 决定</span>
-      </div>
-
-      <div class="form-row">
-        <label>
-          <input id="auto-action-dry-run" type="checkbox" style="margin-right:6px;">
-          <strong>试跑模式（dry-run）</strong>
-        </label>
-        <span class="field-hint">开启时执行链路走完所有定位 + log，但**不**点最后的发送 / 确定。BOSS UI 改时调试用</span>
+      <!-- v0.24.2：移除 auto-action-enabled / auto-action-dry-run 两个开关（迁移到 sidepanel 沟通页 control-bar） -->
+      <h3 style="margin-top:20px;">评估后自动求简历 · 冷却参数</h3>
+      <div class="field-hint" style="margin-bottom:8px;">
+        ☑ 自动话术+求简历（评估「符合」时）／ ☑ 自动标不合适（评估「pass」时）两个开关已迁移到 <strong>侧边栏 → 沟通页 → control-bar</strong>，HR 现场决定每批是否启用。<br>
+        dry-run 调试模式已默认关闭、不再暴露 UI 开关。此处只保留冷却参数。
       </div>
 
       <div class="form-grid-2">
@@ -434,7 +389,23 @@
           <span id="danger-op-status" class="test-result" style="margin-left:8px; font-size:12px;"></span>
         </div>
       </div>
+
+      <!-- v0.22.5 · Phase 3·3c 前置：IDB schema 升级前的回滚兜底备份 -->
+      <div style="margin-top:14px; padding:12px; background:#f6f8fa; border:1px solid #d0d7de; border-radius:4px;">
+        <div style="font-size:12px; color:#444; margin-bottom:10px; line-height:1.6;">
+          <strong>📦 导出 IDB 备份 JSON</strong>：把整个本地 IndexedDB（捕获 / 评估 / 事件 / 沟通池 / 诊断日志 / 撤销快照 / FSA 状态）打包成 JSON 下载。
+          <br><span style="color:#666;">用途：v0.22.5 起 IDB schema 已升级到 v7（新增 dismissed_candidates 表，仅新增不破坏既有）；如不放心可先点这里导出当前快照，schema 升级出问题时可回滚回灌。</span>
+          <br><span style="color:#888;">普通使用不需要点；仅在 schema 重大变更前或开发调试时使用。</span>
+        </div>
+        <div class="actions" style="gap:8px;">
+          <button id="btn-export-idb-backup" class="secondary">📦 导出 IDB 备份 JSON</button>
+          <span id="idb-backup-status" class="test-result" style="margin-left:8px; font-size:12px;"></span>
+        </div>
+      </div>
     </section>
+
+    </details>
+    <!-- /v0.25.2 高级折叠区 -->
 
   </main>
 
@@ -445,6 +416,7 @@
   </footer>
 
   <!-- 预览 prompt modal（默认隐藏） -->
+  <!-- v0.25.2：加「修改」+「保存自定义」+「恢复默认」按钮（自定义保存到 jd.customPrompt） -->
   <div id="prompt-modal" class="modal hidden">
     <div class="modal-overlay"></div>
     <div class="modal-box">
@@ -454,10 +426,15 @@
       </div>
       <div class="modal-body">
         <pre id="prompt-modal-content"></pre>
+        <textarea id="prompt-modal-edit" class="hidden" style="width:100%;min-height:400px;font-family:Consolas,monospace;font-size:12px;padding:8px;border:1px solid #d0d7de;border-radius:4px;resize:vertical;" placeholder="修改后保存的 prompt 会覆盖自动生成的版本"></textarea>
+        <div id="prompt-modal-status" style="margin-top:8px;font-size:12px;color:#666;"></div>
       </div>
       <div class="modal-footer">
-        <span class="modal-hint">这是 LLM 实际收到的 system prompt。</span>
+        <span class="modal-hint" id="prompt-modal-hint">这是 LLM 实际收到的 system prompt。</span>
         <button id="prompt-modal-copy" class="secondary">复制全文</button>
+        <button id="prompt-modal-edit-toggle" class="secondary">修改</button>
+        <button id="prompt-modal-save" class="primary hidden">保存自定义</button>
+        <button id="prompt-modal-reset" class="secondary hidden">恢复默认</button>
       </div>
     </div>
   </div>
