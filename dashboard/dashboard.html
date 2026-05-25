@@ -2,86 +2,143 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>BOSS Sniffer 看板 v2</title>
+  <title>BOSS Sniffer 看板 v1.1.0</title>
   <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
+  <!-- v1.1.0: sticky header + 顶层控件 + theme toggle -->
   <header class="board-header">
-    <h1>BOSS Sniffer 看板 <span class="version" id="version-tag">v?.?.?</span></h1>
+    <h1>📊 BOSS Sniffer 看板 <span class="version" id="version-tag">v?.?.?</span></h1>
     <div id="board-controls" class="board-controls">
       <div class="ctrl-group">
-        <span class="ctrl-label">时间</span>
         <button class="time-btn active" data-time="day">日</button>
         <button class="time-btn" data-time="week">周</button>
         <button class="time-btn" data-time="month">月</button>
       </div>
-      <div class="ctrl-group">
-        <span class="ctrl-label">JD</span>
-        <select id="jd-filter">
-          <option value="">全部</option>
-        </select>
-      </div>
+      <select id="jd-filter" title="JD 筛选">
+        <option value="">全部 JD</option>
+      </select>
       <button id="btn-refresh" class="btn-refresh">↻ 刷新</button>
+      <button id="btn-theme" class="btn-theme" title="主题（自动/明/暗）">🌓</button>
     </div>
   </header>
 
+  <!-- v1.1.0: 顶层 scenario tab，整盘联动（取代原「漏斗卡」内嵌 tab） -->
+  <nav class="scenario-bar">
+    <div class="scenario-tabs" id="scenario-tabs">
+      <button class="scenario-tab active" data-scenario="recommend">推荐页</button>
+      <button class="scenario-tab" data-scenario="chat">沟通页</button>
+    </div>
+  </nav>
+
   <main class="board-main">
-    <!-- 4.B 漏斗卡（顶部，内嵌 推荐页/沟通页 tab） -->
-    <section class="board-card" id="view-funnel-card">
-      <h2 id="funnel-title">📊 日数据</h2>
-      <div class="funnel-tabs" id="funnel-tabs">
-        <button class="funnel-tab active" data-scenario="recommend">推荐页</button>
-        <button class="funnel-tab" data-scenario="chat">沟通页</button>
+    <!-- v1.1.0 KPI 数字带（v1.1.17 起 5 卡 · 加「平均速率」反映批次内吞吐效率）
+         v1.1.3: 顺序调整 已判断 / 符合 / 符合率 / 招呼（符合率提前到第 3 位）
+         v1.1.17: 新增「平均速率」卡 — 批次内处理耗时统计 + 节省时长换算 -->
+    <section class="kpi-strip" id="kpi-strip">
+      <div class="kpi-card k-judged" id="kpi-judged">
+        <div class="kpi-label">📋 <span id="kpi-judged-label">今日已判断</span></div>
+        <div class="kpi-value"><span class="skeleton skel-row short">&nbsp;</span></div>
       </div>
-      <div id="view-funnel-content">
+      <div class="kpi-card k-match" id="kpi-match">
+        <div class="kpi-label">✅ <span id="kpi-match-label">今日符合</span></div>
+        <div class="kpi-value"><span class="skeleton skel-row short">&nbsp;</span></div>
+      </div>
+      <div class="kpi-card k-rate" id="kpi-rate">
+        <div class="kpi-label">📈 <span id="kpi-rate-label">符合率</span></div>
+        <div class="kpi-value"><span class="skeleton skel-row short">&nbsp;</span></div>
+      </div>
+      <div class="kpi-card k-sayhi" id="kpi-sayhi">
+        <div class="kpi-label">💬 <span id="kpi-sayhi-label">今日自动招呼</span></div>
+        <div class="kpi-value"><span class="skeleton skel-row short">&nbsp;</span></div>
+      </div>
+      <!-- v1.1.17: 新增第 5 卡「平均处理速率」(批次内吞吐;data-source: events loop_start/loop_end 配对) -->
+      <div class="kpi-card k-speed" id="kpi-speed">
+        <div class="kpi-label">⚡ <span id="kpi-speed-label">平均速率</span></div>
+        <div class="kpi-value"><span class="skeleton skel-row short">&nbsp;</span></div>
+      </div>
+    </section>
+
+    <!-- v1.1.3: 主区双栏 grid — 左 JD 分析（1.2fr 更宽）/ 右趋势（1fr） -->
+    <!-- v1.1.2 删评估流转卡;v1.1.3 JD 内容更多放左侧主位 -->
+    <div class="main-grid">
+      <div class="grid-left">
+        <!-- 4.C JD 分析卡 -->
+        <section class="board-card" id="view-jd-card">
+          <h2>🩺 JD 分析</h2>
+          <div id="view-jd-content">
+            <p class="loading">加载中...</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="grid-right">
+        <!-- 4.D 趋势卡 -->
+        <section class="board-card" id="view-trend-card">
+          <h2 id="trend-title">📈 天趋势</h2>
+          <div id="view-trend-content">
+            <p class="loading">加载中...</p>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 4.F 批次效率(v1.1.17 新增 · 全宽 · 从 events loop_start/loop_end 配对算)
+         v1.1.19:删除标题右侧 hint 小字 + 改为跨场景显示(不按 scenario tab 联动) -->
+    <section class="board-card" id="view-batch-card">
+      <h2>⏱️ 批次效率</h2>
+      <div id="view-batch-content">
         <p class="loading">加载中...</p>
       </div>
     </section>
 
-    <!-- 4.C JD 分析卡（M_i pass 主因 + O_i 命中率，按时间窗切片） -->
-    <section class="board-card" id="view-jd-card">
-      <h2>🩺 JD 分析</h2>
-      <div id="view-jd-content">
-        <p class="loading">加载中...</p>
-      </div>
-    </section>
-
-    <!-- 4.D 趋势卡（粒度跟时间窗对应：日 → 7 天 / 周 → 8 周 / 月 → 6 月） -->
-    <section class="board-card" id="view-trend-card">
-      <h2 id="trend-title">📈 7 天趋势</h2>
-      <div id="view-trend-content">
-        <p class="loading">加载中...</p>
-      </div>
-    </section>
-
-    <!-- 4.E 候选人记录（默认展示，最底部，超出 28 条加待续提示） -->
+    <!-- 4.E 候选人记录（全宽 · commit 2 加搜索/翻页/行展开） -->
     <section class="board-card drawer-card" id="view-drawer-card">
       <h2>
         👥 候选人记录
         <span class="drawer-meta" id="drawer-meta"></span>
       </h2>
-      <!-- v0.20.5：HR 手动切换显示全部 / 仅符合 -->
       <div class="drawer-filter-tabs" id="drawer-filter-tabs">
         <button class="drawer-filter-tab active" data-filter="all">显示全部</button>
         <button class="drawer-filter-tab" data-filter="match">仅符合</button>
+        <button class="drawer-filter-tab" data-filter="marked-wrong">🚩 仅 LLM 错判</button>
       </div>
       <div id="view-drawer-content">
         <p class="loading">加载中...</p>
       </div>
     </section>
 
-    <!-- ⚙ 诊断抽屉（默认折叠，开发用） -->
+    <!-- 诊断抽屉 -->
     <details class="diag-drawer" id="diag-drawer">
       <summary>⚙ 诊断（点击展开 — 开发用）</summary>
       <div id="dashboard-debug" class="dashboard-debug">数据源：等待刷新...</div>
     </details>
   </main>
 
-  <!-- v0.17.0 storage 重构：jd-templates 依赖 BossStorageSync，必须先加载 -->
+  <!-- v1.1.5: 候选人详情 modal（hidden by default,行展开「查看完整资料」按钮触发） -->
+  <div class="detail-modal hidden" id="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-modal-title">
+    <div class="detail-modal-overlay" id="detail-modal-overlay"></div>
+    <div class="detail-modal-panel">
+      <div class="detail-modal-header">
+        <h2 id="detail-modal-title">候选人完整资料</h2>
+        <button class="detail-modal-close" id="detail-modal-close" title="关闭(ESC)">✕</button>
+      </div>
+      <div class="detail-modal-tabs" id="detail-modal-tabs">
+        <button class="detail-tab active" data-tab="profile">👤 基础资料</button>
+        <button class="detail-tab" data-tab="resume">💼 履历</button>
+        <button class="detail-tab" data-tab="eval">🤖 LLM 评估</button>
+      </div>
+      <div class="detail-modal-body" id="detail-modal-body">
+        <p class="loading">加载中...</p>
+      </div>
+    </div>
+  </div>
+
+
+  <script src="../lib/ui-utils.js"></script>
+  <script src="../lib/message-types.js"></script>
   <script src="../lib/storage-sync.js"></script>
   <script src="../lib/jd-templates.js"></script>
   <script src="dashboard.js"></script>
 </body>
 </html>
-</content>
-</invoke>

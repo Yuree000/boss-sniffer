@@ -42,16 +42,16 @@ window.addEventListener('message', function (event) {
   if (!msg || msg.__bossSniffer !== true) return;
 
   if (msg.kind === 'capture') {
-    safeSend({ type: 'CAPTURE', payload: msg.payload });
+    safeSend({ type: BossMessageTypes.CAPTURE, payload: msg.payload });
   } else if (msg.kind === 'detail-panel-scan') {
     // v0.17.0.10 POC A7 回灌：沟通页详情面板 DOM 扫描结果转发给 BG
     safeSend({
-      type: 'DETAIL_PANEL_SCAN',
+      type: BossMessageTypes.DETAIL_PANEL_SCAN,
       candidateId: msg.candidateId,
       payload: msg.payload
     });
   } else if (msg.kind === 'ready') {
-    safeSend({ type: 'INJECT_READY', url: location.href });
+    safeSend({ type: BossMessageTypes.INJECT_READY, url: location.href });
   } else if (msg.kind === 'scan-sayhi-result') {
     const cb = pendingSayhiScans[msg.requestId];
     if (cb) {
@@ -121,7 +121,7 @@ window.addEventListener('message', function (event) {
     // inject → content → BG → debugger 真点击 → BG response → content → inject
     const requestId = msg.requestId || '';
     chrome.runtime.sendMessage({
-      type: 'REAL_CLICK_AT_COORDS',
+      type: BossMessageTypes.REAL_CLICK_AT_COORDS,
       x: msg.x,
       y: msg.y
     }, function (resp) {
@@ -148,7 +148,7 @@ const SCROLL_THROTTLE_MS = 1200;
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!msg || !msg.type) return false;
 
-  if (msg.type === 'SCROLL_RECOMMEND_LIST') {
+  if (msg.type === BossMessageTypes.SCROLL_RECOMMEND_LIST) {
     const now = Date.now();
     if (now - lastScrollAt < SCROLL_THROTTLE_MS) {
       sendResponse({ ok: false, throttled: true });
@@ -215,7 +215,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   // 与 sayHi.js:pageScript_scrollIntoView 同源同策略，不同点：
   //   - 走 chrome.runtime 消息而非 chrome.debugger（不弹"正在调试"黄条）
   //   - 找到后 1.5s 高亮闪烁，给 HR 视觉确认
-  if (msg.type === 'SCROLL_TO_CANDIDATE') {
+  if (msg.type === BossMessageTypes.SCROLL_TO_CANDIDATE) {
     try {
       const ids = [String(msg.candidateId || ''), String(msg.encryptUid || '')].filter(Boolean);
       if (ids.length === 0) { sendResponse({ ok: false, error: '缺 candidateId/encryptUid' }); return false; }
@@ -314,7 +314,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   // S6 fix: HR 在已加载完的 BOSS 页面开扩展点开始时，需要触发首次 fetch
   // location.reload() 在 page 上下文执行，等价于 F5
   // chrome.tabs.reload (扩展进程触发) 在某些场景下不灵，所以走 page 端
-  if (msg.type === 'REFRESH_RECOMMEND_PAGE') {
+  if (msg.type === BossMessageTypes.REFRESH_RECOMMEND_PAGE) {
     sendResponse({ ok: true });
     // 50ms 让 sendResponse 先返回，再 reload 杀掉 content
     setTimeout(function () {
@@ -324,7 +324,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   }
 
   // v0.16.0：BG 触发 inject 模拟点击 iframe 内的「最新」tab
-  if (msg.type === 'CLICK_LATEST_TAB') {
+  if (msg.type === BossMessageTypes.CLICK_LATEST_TAB) {
     // 只在推荐 iframe 内处理；主页 / 其他 frame noop（让另一个 frame 响应）
     if (location.pathname.indexOf('/web/frame/recommend') === -1) {
       sendResponse({ ok: false, error: 'not in recommend iframe' });
@@ -353,7 +353,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   // v0.17.0.10 POC A7 阶段 b：BG 触发"点击候选人 + 扫详情面板"
   // BG → content → inject 点卡片 + 等渲染 + 扫 DOM → 完成回传
-  if (msg.type === 'CLICK_AND_SCAN_DETAIL') {
+  if (msg.type === BossMessageTypes.CLICK_AND_SCAN_DETAIL) {
     const reqId = 'cas-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     let done = false;
     pendingClickAndScans[reqId] = function (result) {
@@ -380,7 +380,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   // v0.14.0-pre：沟通页一键操作触发
   // BG → content → inject 执行（点卡片+点按钮+等弹窗/卡片消失）→ 完成回传
-  if (msg.type === 'EXECUTE_SAYHI_ACTION') {
+  if (msg.type === BossMessageTypes.EXECUTE_SAYHI_ACTION) {
     const reqId = 'act-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     let done = false;
     pendingSayhiActions[reqId] = function (result) {
@@ -407,7 +407,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   // v0.17.1.0：评估「符合」→ 输入话术 + 求简历
   // BG → content → inject 执行（选卡片 → 输入话术 → 发送 → 求简历两步）→ 完成回传
-  if (msg.type === 'EXECUTE_GREET_THEN_RESUME') {
+  if (msg.type === BossMessageTypes.EXECUTE_GREET_THEN_RESUME) {
     const reqId = 'gtr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     let done = false;
     pendingGreetThenResume[reqId] = function (result) {
@@ -435,7 +435,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   // v0.13.3：沟通页字段补全 fetch 触发
   // BG → content → inject 主动 fetch chat/geek/info × N（节流）→ 完成回传
-  if (msg.type === 'TRIGGER_FETCH_GEEK_INFO_BATCH') {
+  if (msg.type === BossMessageTypes.TRIGGER_FETCH_GEEK_INFO_BATCH) {
     const reqId = 'fetch-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     let done = false;
     pendingFetchBatches[reqId] = function (result) {
@@ -463,7 +463,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   // BG → content → inject (MAIN world) → 扫描 → 回 content → 回 BG
   // v0.13.1：inject 的 scanSayhiCards 改 async（要滚动 .user-list 扫虚拟列表），
   //         超时从 2s → 15s 给足时间扫完所有候选人
-  if (msg.type === 'SCAN_SAYHI_TAB') {
+  if (msg.type === BossMessageTypes.SCAN_SAYHI_TAB) {
     const reqId = 'scan-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     let done = false;
     pendingSayhiScans[reqId] = function (result) {

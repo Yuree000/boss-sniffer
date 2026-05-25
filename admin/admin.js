@@ -28,10 +28,13 @@ const DEFAULTS = {
   },
   // v0.17.0.10 POC A7 阶段 b：沟通页 DOM 扫描风控配置
   sayHiDom: {
-    scanMaxPerRun: 1,
+    // v1.1.10 fix:scanMaxPerRun 1 → 0(0 = 无限),必须跟 background.js 默认值同步。
+    // admin UI 已在 v1.0.14 删除,这里只是 deepMerge fallback,但仍是真生效的默认值。
+    scanMaxPerRun: 0,
     cooldownMinMs: 5000,
     cooldownMaxMs: 8000,
-    proactiveFetchEnabled: false
+    // v1.1.12 fix:proactiveFetchEnabled false → true,必须跟 background.js 默认值同步。
+    proactiveFetchEnabled: true
   },
   // v0.17.1.3：评估「符合」→ 自动求简历（仅批量，单评始终手动）
   autoAction: {
@@ -410,7 +413,7 @@ async function persistLlmSettings() {
   const settings = getLlmSettings();
   await ensureHostPermissionsForSettings(settings);
   const r = await chrome.runtime.sendMessage({
-    type: 'SET_CONFIG_SECTION',
+    type: BossMessageTypes.SET_CONFIG_SECTION,
     section: 'llm',
     patch: settings
   });
@@ -504,7 +507,7 @@ async function testLlmConfigById(id) {
   result.textContent = '⏳ 测试「' + (cfg.name || cfg.model || id) + '」...';
   try {
     await ensureHostPermission(cfg.baseUrl);
-    const r = await chrome.runtime.sendMessage({ type: 'TEST_LLM_CONFIG', llm: cfg });
+    const r = await chrome.runtime.sendMessage({ type: BossMessageTypes.TEST_LLM_CONFIG, llm: cfg });
     if (r.ok) {
       result.className = 'test-result ok';
       result.textContent = '✓ 连接成功（响应："' + (r.text || '').slice(0, 40) + '"）';
@@ -530,7 +533,7 @@ function parseRestMinutes(s) {
 
 // ============ 加载 ============
 async function loadAll() {
-  const res = await chrome.runtime.sendMessage({ type: 'GET_CONFIG' });
+  const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.GET_CONFIG });
   if (!res || !res.config) {
     setStatus('加载配置失败 — 请检查扩展状态', 'err');
     return;
@@ -542,27 +545,11 @@ async function loadAll() {
   renderLlmList();
   closeLlmDrawer();
 
-  // sayHi（enabled 已搬到侧边栏，admin 仅配置详细参数）
-  const sayHi = res.config.sayHi || DEFAULTS.sayHi;
-  $('sayhi-delay-min').value = sayHi.delayMin != null ? sayHi.delayMin : DEFAULTS.sayHi.delayMin;
-  $('sayhi-delay-max').value = sayHi.delayMax != null ? sayHi.delayMax : DEFAULTS.sayHi.delayMax;
-  $('sayhi-rest-after').value = sayHi.restAfter != null ? sayHi.restAfter : DEFAULTS.sayHi.restAfter;
-  const rm = sayHi.restMinutes || DEFAULTS.sayHi.restMinutes;
-  $('sayhi-rest-minutes').value = Array.isArray(rm) ? rm.join(',') : String(rm);
-
-  // v0.17.0.10 POC A7：沟通页 DOM 扫描配置
-  const sayHiDom = res.config.sayHiDom || DEFAULTS.sayHiDom;
-  $('sayhidom-max-per-run').value = sayHiDom.scanMaxPerRun != null ? sayHiDom.scanMaxPerRun : DEFAULTS.sayHiDom.scanMaxPerRun;
-  $('sayhidom-cooldown-min').value = sayHiDom.cooldownMinMs != null ? sayHiDom.cooldownMinMs : DEFAULTS.sayHiDom.cooldownMinMs;
-  $('sayhidom-cooldown-max').value = sayHiDom.cooldownMaxMs != null ? sayHiDom.cooldownMaxMs : DEFAULTS.sayHiDom.cooldownMaxMs;
-  $('sayhidom-proactive-fetch').checked = !!sayHiDom.proactiveFetchEnabled;
-
-  // v0.17.1.3：批量评估后自动求简历（单评永不自动）
-  // v0.24.2：enabledBatchEval / autoMarkUnsuitable / dryRun 不再在 admin 渲染
-  //   迁移：前两者由 sidepanel 沟通页 control-bar 现场决定；dryRun 永久关闭无 UI
+  // v1.0.14：sayHi / sayHiDom 配置 UI 已删,运行时仍读 chrome.storage.sync(deepMerge + DEFAULTS 兜底)
+  //   autoAction 段保留(且新增 hoverDelayMin/MaxMs);actionCooldownMinMs/MaxMs UI 也删,运行时仍读
   const autoAction = res.config.autoAction || DEFAULTS.autoAction;
-  $('auto-action-cooldown-min').value = autoAction.actionCooldownMinMs != null ? autoAction.actionCooldownMinMs : DEFAULTS.autoAction.actionCooldownMinMs;
-  $('auto-action-cooldown-max').value = autoAction.actionCooldownMaxMs != null ? autoAction.actionCooldownMaxMs : DEFAULTS.autoAction.actionCooldownMaxMs;
+  $('hover-delay-min').value = autoAction.hoverDelayMinMs != null ? autoAction.hoverDelayMinMs : DEFAULTS.autoAction.hoverDelayMinMs;
+  $('hover-delay-max').value = autoAction.hoverDelayMaxMs != null ? autoAction.hoverDelayMaxMs : DEFAULTS.autoAction.hoverDelayMaxMs;
 
   // 版本号（从 manifest 拿）
   if (chrome.runtime && chrome.runtime.getManifest) {
@@ -577,47 +564,16 @@ function collectLlmPatch() {
   return getLlmSettings();
 }
 
-function collectSayHiPatch() {
-  const dMin = parseInt($('sayhi-delay-min').value, 10);
-  const dMax = parseInt($('sayhi-delay-max').value, 10);
-  const restAfter = parseInt($('sayhi-rest-after').value, 10);
-  // 注意：enabled 不在 patch 中（侧边栏单独控制），保存只更新节流参数
-  return {
-    delayMin: isNaN(dMin) ? DEFAULTS.sayHi.delayMin : Math.max(0, dMin),
-    delayMax: isNaN(dMax) ? DEFAULTS.sayHi.delayMax : Math.max(0, dMax),
-    restAfter: isNaN(restAfter) ? DEFAULTS.sayHi.restAfter : Math.max(1, restAfter),
-    restMinutes: parseRestMinutes($('sayhi-rest-minutes').value)
-  };
-}
-
-// v0.17.0.10 POC A7：沟通页 DOM 扫描风控配置
-function collectSayHiDomPatch() {
-  const maxN = parseInt($('sayhidom-max-per-run').value, 10);
-  const cMin = parseInt($('sayhidom-cooldown-min').value, 10);
-  const cMax = parseInt($('sayhidom-cooldown-max').value, 10);
-  const cMinSafe = isNaN(cMin) ? DEFAULTS.sayHiDom.cooldownMinMs : Math.max(0, cMin);
-  const cMaxSafe = isNaN(cMax) ? DEFAULTS.sayHiDom.cooldownMaxMs : Math.max(cMinSafe, cMax);
-  return {
-    scanMaxPerRun: isNaN(maxN) ? DEFAULTS.sayHiDom.scanMaxPerRun : Math.max(0, maxN),
-    cooldownMinMs: cMinSafe,
-    cooldownMaxMs: cMaxSafe,
-    proactiveFetchEnabled: !!$('sayhidom-proactive-fetch').checked
-  };
-}
-
-// v0.17.1.3：批量评估后自动求简历配置（单评永不自动）
-// v0.24.2：admin 只 patch cooldown 参数 + 强制 dryRun=false；
-//   enabledBatchEval / autoMarkUnsuitable 由 sidepanel 沟通页 control-bar 各自的
-//   SET_CONFIG_SECTION 调用维护（merge 语义不被覆盖）。
+// v1.0.14：collectSayHiPatch / collectSayHiDomPatch 已删(UI 移除,storage 旧值不动)
+//   collectAutoActionPatch 改为只采 hover delay(其它字段仍在 storage 由 sidepanel 等改)
 function collectAutoActionPatch() {
-  const cMin = parseInt($('auto-action-cooldown-min').value, 10);
-  const cMax = parseInt($('auto-action-cooldown-max').value, 10);
-  const cMinSafe = isNaN(cMin) ? DEFAULTS.autoAction.actionCooldownMinMs : Math.max(0, cMin);
-  const cMaxSafe = isNaN(cMax) ? DEFAULTS.autoAction.actionCooldownMaxMs : Math.max(cMinSafe, cMax);
+  const hMin = parseInt($('hover-delay-min').value, 10);
+  const hMax = parseInt($('hover-delay-max').value, 10);
+  const hMinSafe = isNaN(hMin) ? DEFAULTS.autoAction.hoverDelayMinMs : Math.max(0, hMin);
+  const hMaxSafe = isNaN(hMax) ? DEFAULTS.autoAction.hoverDelayMaxMs : Math.max(hMinSafe, hMax);
   return {
-    actionCooldownMinMs: cMinSafe,
-    actionCooldownMaxMs: cMaxSafe,
-    dryRun: false  // v0.24.2：试跑模式永久关闭
+    hoverDelayMinMs: hMinSafe,
+    hoverDelayMaxMs: hMaxSafe
   };
 }
 
@@ -636,7 +592,7 @@ $('btn-test-llm').addEventListener('click', async function () {
   $('btn-test-llm').disabled = true;
   try {
     await ensureHostPermission(llm.baseUrl);
-    const r = await chrome.runtime.sendMessage({ type: 'TEST_LLM_CONFIG', llm: llm });
+    const r = await chrome.runtime.sendMessage({ type: BossMessageTypes.TEST_LLM_CONFIG, llm: llm });
     if (r.ok) {
       result.className = 'test-result ok';
       result.textContent = '✓ 连接成功（响应："' + (r.text || '').slice(0, 40) + '"）';
@@ -657,16 +613,13 @@ $('btn-save').addEventListener('click', async function () {
   $('btn-save').disabled = true;
   try {
     const llmPatch = collectLlmPatch();
-    const sayHiPatch = collectSayHiPatch();
     await ensureHostPermissionsForSettings(llmPatch);
 
-    const sayHiDomPatch = collectSayHiDomPatch();
+    // v1.0.14：sayHi / sayHiDom UI 删除,save 仅保留 llm + autoAction(hover delay)两段
     const autoActionPatch = collectAutoActionPatch();
     const ops = [
-      chrome.runtime.sendMessage({ type: 'SET_CONFIG_SECTION', section: 'llm', patch: llmPatch }),
-      chrome.runtime.sendMessage({ type: 'SET_CONFIG_SECTION', section: 'sayHi', patch: sayHiPatch }),
-      chrome.runtime.sendMessage({ type: 'SET_CONFIG_SECTION', section: 'sayHiDom', patch: sayHiDomPatch }),
-      chrome.runtime.sendMessage({ type: 'SET_CONFIG_SECTION', section: 'autoAction', patch: autoActionPatch })
+      chrome.runtime.sendMessage({ type: BossMessageTypes.SET_CONFIG_SECTION, section: 'llm', patch: llmPatch }),
+      chrome.runtime.sendMessage({ type: BossMessageTypes.SET_CONFIG_SECTION, section: 'autoAction', patch: autoActionPatch })
     ];
 
     const results = await Promise.all(ops);
@@ -687,23 +640,13 @@ $('btn-save').addEventListener('click', async function () {
 
 // ============ 重置 ============
 $('btn-reset').addEventListener('click', function () {
-  if (!confirm('确认把 LLM 和 sayHi 配置重置为默认？\n（已保存的 API Key 不会被清除，需要单独清空 input 后保存）')) return;
+  if (!confirm('确认把 LLM 和 hover 时序配置重置为默认？\n（已保存的 API Key 不会被清除，需要单独清空 input 后保存）')) return;
   loadedConfig.llm = normalizeLlmSettings(DEFAULTS.llm);
   renderLlmList();
   closeLlmDrawer();
-  $('sayhi-delay-min').value = DEFAULTS.sayHi.delayMin;
-  $('sayhi-delay-max').value = DEFAULTS.sayHi.delayMax;
-  $('sayhi-rest-after').value = DEFAULTS.sayHi.restAfter;
-  // v0.17.0.10 sayHiDom 重置
-  $('sayhidom-max-per-run').value = DEFAULTS.sayHiDom.scanMaxPerRun;
-  $('sayhidom-cooldown-min').value = DEFAULTS.sayHiDom.cooldownMinMs;
-  $('sayhidom-cooldown-max').value = DEFAULTS.sayHiDom.cooldownMaxMs;
-  $('sayhidom-proactive-fetch').checked = DEFAULTS.sayHiDom.proactiveFetchEnabled;
-  $('sayhi-rest-minutes').value = DEFAULTS.sayHi.restMinutes.join(',');
-  // v0.17.1.3 autoAction 重置
-  // v0.24.2：enabledBatchEval / autoMarkUnsuitable / dryRun 已迁出 admin，此处不再重置
-  $('auto-action-cooldown-min').value = DEFAULTS.autoAction.actionCooldownMinMs;
-  $('auto-action-cooldown-max').value = DEFAULTS.autoAction.actionCooldownMaxMs;
+  // v1.0.14：sayHi / sayHiDom / autoAction.cooldown 三段 UI 已删,reset 仅恢复 hover delay
+  $('hover-delay-min').value = DEFAULTS.autoAction.hoverDelayMinMs;
+  $('hover-delay-max').value = DEFAULTS.autoAction.hoverDelayMaxMs;
   setStatus('已恢复表单为默认值，点击「保存所有更改」生效', '');
 });
 
@@ -744,241 +687,411 @@ $('llm-preset-model').addEventListener('change', function () {
 
 // 注：sayHi 启用确认弹窗已搬到侧边栏（与启用 toggle 在同一处）
 
-// ============ PoC 调试工具 ============
-function setPocStatus(msg, kind) {
-  const el = $('poc-status');
-  el.className = 'test-result' + (kind ? ' ' + kind : '');
-  el.textContent = msg || '';
-}
+// ============ v1.0.14：PoC 调试工具整段删（已包到沟通页 DOM 扫描 UI 折叠区下,UI 删除则 handler 一同删）
+//   原有 4 个 handler:btn-find-tab / btn-test-debugger / btn-test-sayhi / btn-diagnose-dom
+//   对应消息 type FIND_BOSS_TAB / TEST_DEBUGGER_ATTACH / TEST_SAYHI / TEST_DIAGNOSE_DOM
+//   background.js message-router 端 handler 保留(供未来调试/sidepanel 诊断用),admin UI 不再触发。
+//   原始代码可从 git log 找回(commit a4c292a 前后)。
 
-$('btn-find-tab').addEventListener('click', async function () {
-  setPocStatus('查找中...', 'loading');
-  const r = await chrome.runtime.sendMessage({ type: 'FIND_BOSS_TAB' });
-  if (r.ok) {
-    setPocStatus('✓ 找到 tab #' + r.tabId + '：' + (r.url || '').slice(0, 60), 'ok');
-  } else {
-    setPocStatus('✗ ' + (r.error || '未知错误'), 'err');
-  }
-});
+// (PoC 调试工具 handler 整段已删除 v1.0.14)
 
-$('btn-test-debugger').addEventListener('click', async function () {
-  setPocStatus('attaching...', 'loading');
-  $('btn-test-debugger').disabled = true;
-  try {
-    const r = await chrome.runtime.sendMessage({ type: 'TEST_DEBUGGER_ATTACH' });
-    if (r.ok) {
-      const page = r.page || {};
-      setPocStatus('✓ debugger 工作正常 — 当前页：' + (page.title || '?').slice(0, 30) + ' [' + (page.url || '').slice(0, 50) + ']', 'ok');
-    } else {
-      setPocStatus('✗ ' + (r.error || '未知错误'), 'err');
-    }
-  } finally {
-    $('btn-test-debugger').disabled = false;
-  }
-});
+// ============ JD 模板管理（v1.1.23 P3-4：BOSS 岗位树形结构） ============
+// 数据层:
+//   - self.BossPositions (lib/boss-positions.js):岗位 CRUD + 嵌套查询 + 拖拽排序
+//   - self.BossJD (lib/jd-templates.js):模板 CRUD + cloneTemplate
+// UI 层在此
+//   - 顶层 #position-tree 渲染岗位卡片树
+//   - 每个岗位卡片头:折叠箭头 / 岗位名 / 模板计数 / 改名 / 加模板 / 删岗位 / 拖拽手柄
+//   - 每个模板行:模板名 / 预览 / 复制(同岗位)/ 编辑 / 删除 / 拖拽手柄
+//   - 拖拽:HTML5 原生 drag-drop;岗位间排序、模板在岗位内排序;**不跨岗位**
+//   - 复制:cloneTemplate(sourceId) 后,把源岗位 positionId 写到副本上再 saveTemplate
 
-$('btn-test-sayhi').addEventListener('click', async function () {
-  const cid = $('test-candidate-id').value.trim();
-  if (!cid) {
-    setPocStatus('✗ 请先填 candidateId', 'err');
-    return;
-  }
-  setPocStatus('执行中...', 'loading');
-  $('btn-test-sayhi').disabled = true;
-  try {
-    const r = await chrome.runtime.sendMessage({ type: 'TEST_SAYHI', candidateId: cid });
-    if (r.ok) {
-      const strat = r.matchStrategy ? '['+r.matchStrategy+'] ' : '';
-      const confirm = r.confirmClicked ? '+确认弹窗"' + (r.confirmButtonText || '') + '"' : (r.confirmClicked === false ? '（无确认弹窗）' : '');
-      setPocStatus('✓ ' + strat + '点击"' + (r.buttonText || '打招呼') + '"' + confirm + '（' + new Date(r.clickedAt).toLocaleTimeString() + '）', 'ok');
-    } else {
-      const hint = r.hint ? ' [' + r.hint + ']' : '';
-      setPocStatus('✗ ' + (r.error || '失败') + hint + '（试试 ④ 诊断 DOM）', 'err');
-    }
-  } finally {
-    $('btn-test-sayhi').disabled = false;
-  }
-});
+const escapeHtml = window.BossUiUtils.escapeHtml; // v1.1.22 提到 lib/ui-utils.js
 
-$('btn-diagnose-dom').addEventListener('click', async function () {
-  const cid = $('test-candidate-id').value.trim();
-  setPocStatus('诊断中...', 'loading');
-  $('btn-diagnose-dom').disabled = true;
-  const out = $('diag-output');
-  try {
-    const r = await chrome.runtime.sendMessage({ type: 'TEST_DIAGNOSE_DOM', candidateId: cid });
-    if (r.ok) {
-      const d = r.diagnosis;
-      const lines = [];
-      lines.push('=== 诊断结果 ===');
-      lines.push('当前页 URL: ' + d.url);
-      lines.push('页面标题: ' + d.title);
-      lines.push('candidateId: ' + cid);
-      lines.push('encryptUid (从 IndexedDB): ' + (r.encryptUid || '(无)'));
-      lines.push('');
-      lines.push('=== ID 匹配命中数 ===');
-      lines.push('用 candidateId 匹配到的元素: ' + d.idMatchCount.byCandidateId);
-      lines.push('用 encryptUid 匹配到的元素:  ' + d.idMatchCount.byEncryptUid);
-      lines.push('');
-      lines.push('=== 命中 ID 的 attribute（这就是 BOSS 用的字段名！） ===');
-      if (d.idMatchedAttrs && d.idMatchedAttrs.length) {
-        d.idMatchedAttrs.forEach(function (x) {
-          lines.push('  ' + x.attr + ' (出现 ' + x.count + ' 次)');
-        });
-      } else {
-        lines.push('  ⚠ 没有任何元素的 attribute 含目标 ID');
-        lines.push('  → 候选人可能不在当前页 DOM；或 BOSS 把 ID 放在 textContent 里');
-      }
-      lines.push('');
-      lines.push('=== 页面 attribute 频率 Top 20（看 BOSS 命名风格） ===');
-      d.attrFrequency.forEach(function (x) {
-        lines.push('  ' + x.attr.padEnd(30, ' ') + ' × ' + x.count);
-      });
-      if (d.matchedElementChain) {
-        lines.push('');
-        lines.push('=== 匹配元素的祖先链（从下到上） ===');
-        d.matchedElementChain.forEach(function (n, i) {
-          lines.push('  [' + i + '] <' + n.tag + '> class="' + n.cls + '"');
-          n.attrs.forEach(function (a) { lines.push('       ' + a); });
-        });
-      }
-      lines.push('');
-      lines.push('=== 🎯 "打招呼"按钮（' + (d.greetButtons || []).length + ' 个找到） ===');
-      (d.greetButtons || []).forEach(function (g, i) {
-        lines.push('--- 按钮 [' + i + '] 文本="' + g.buttonText + '" 坐标=(' + g.buttonRect.x + ',' + g.buttonRect.y + ') 尺寸=' + g.buttonRect.w + 'x' + g.buttonRect.h + ' ---');
-        lines.push('  按钮 class: "' + g.buttonClass + '"');
-        lines.push('  祖先链:');
-        g.ancestorChain.forEach(function (n, di) {
-          lines.push('    [' + di + '] <' + n.tag + '> class="' + n.cls + '"');
-          n.attrs.forEach(function (a) { lines.push('         ' + a); });
-        });
-        if (g.cardOuterHTML) {
-          lines.push('  卡片 outerHTML:');
-          lines.push('    ' + g.cardOuterHTML);
-        }
-        lines.push('');
-      });
-      if ((d.scopedIdSamples || []).length > 0) {
-        lines.push('=== 🧱 高频 Vue 组件样本（疑似候选人卡片） ===');
-        d.scopedIdSamples.forEach(function (s, i) {
-          lines.push('--- 样本 [' + i + '] scope=' + s.scopedAttr + ' <' + s.tag + '> 尺寸=' + s.size + ' ---');
-          lines.push('  class: "' + s.cls + '"');
-          s.attrs.forEach(function (a) { lines.push('  ' + a); });
-          lines.push('  outerHTML:');
-          lines.push('    ' + s.outerHTML);
-          lines.push('');
-        });
-      }
-      if ((d.kaValues || []).length > 0) {
-        lines.push('=== ka= 属性值（' + d.kaValues.length + ' 个） ===');
-        d.kaValues.forEach(function (k) { lines.push('  ' + k); });
-      }
-      lines.push('');
-      lines.push('=== 🪟 iframe 检查（' + (d.iframes || []).length + ' 个） ===');
-      (d.iframes || []).forEach(function (f, i) {
-        lines.push('--- iframe [' + i + '] ---');
-        lines.push('  src: ' + f.src);
-        lines.push('  name: ' + f.name);
-        lines.push('  尺寸: ' + f.rect.w + 'x' + f.rect.h + ' @ (' + f.rect.x + ',' + f.rect.y + ')');
-        lines.push('  同源可访问: ' + f.sameOrigin);
-        if (f.crossOriginError) lines.push('  跨域错: ' + f.crossOriginError);
-        if (f.innerCounts) {
-          lines.push('  内部元素总数: ' + f.innerCounts.totalElements);
-          lines.push('  内部 .card-inner: ' + f.innerCounts.cardInner);
-          lines.push('  内部 [data-geekid]: ' + f.innerCounts.dataGeekid);
-          lines.push('  内部 [data-geek]: ' + f.innerCounts.dataGeek);
-          lines.push('  内部 button.btn-greet: ' + f.innerCounts.btnGreet);
-          lines.push('  内部 [ka]: ' + f.innerCounts.ka);
-          lines.push('  内部 ID 命中数: ' + f.innerCounts.idMatchInIframe);
-        }
-        if (f.innerSamples) {
-          lines.push('  内部样本:');
-          lines.push('    ' + f.innerSamples);
-        }
-      });
-      if ((d.cardSamples || []).length > 0) {
-        lines.push('');
-        lines.push('=== 候选人卡片样本（启发式 selector） ===');
-        d.cardSamples.forEach(function (s) {
-          lines.push('--- selector: ' + s.selector + '（' + s.count + ' 个） ---');
-          lines.push(s.first2000);
-          lines.push('');
-        });
-      }
-      out.textContent = lines.join('\n');
-      out.style.display = 'block';
-      setPocStatus('✓ 诊断完成 — 把下面输出复制给开发者', 'ok');
-    } else {
-      setPocStatus('✗ ' + (r.error || '失败'), 'err');
-    }
-  } finally {
-    $('btn-diagnose-dom').disabled = false;
-  }
-});
+// 内存里维护折叠态(positionId → 是否展开),re-render 后保留
+// 默认所有岗位展开;HR 点折叠箭头时切到 collapsed
+const _positionCollapsed = Object.create(null);
 
-// ============ JD 模板管理（v0.12.0：必要 + 可选 + 阈值） ============
-// 数据层 self.BossJD（lib/jd-templates.js），UI 层在此
-//   - 列表表头：名称 / 必要 (M) / 可选 (N) / 阈值 (K) / 操作
-//   - 表单：必要条件动态列表 + 可选条件动态列表 + 阈值
-//   - 预览：按钮触发（从表单当前状态构造临时 jd 调 BossPromptBuilder）
-
-function escapeHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+// 当前编辑 JD 表单的 positionId(新建模板时由"+ 添加模板"按钮注入)
+let _editingPositionId = '';
 
 async function loadJDList() {
-  if (!self.BossJD) {
-    console.warn('[admin] BossJD 模块未加载');
+  if (!self.BossPositions || !self.BossJD) {
+    console.warn('[admin] BossPositions / BossJD 模块未加载');
     return;
   }
-  await self.BossJD.ensureSeeded();
-  const list = await self.BossJD.listTemplates();
+  await self.BossPositions.ensureSeeded();
+  const grouped = await self.BossPositions.listPositionsWithTemplates();
   const cur = await self.BossJD.getCurrentJdId();
 
-  const tbody = $('jd-list-body');
-  tbody.innerHTML = '';
-  if (list.length === 0) {
-    $('jd-empty').style.display = 'block';
-    $('jd-table').style.display = 'none';
+  const tree = $('position-tree');
+  tree.innerHTML = '';
+
+  if (grouped.length === 0) {
+    $('position-empty').style.display = 'block';
+    return;
+  }
+  $('position-empty').style.display = 'none';
+
+  grouped.forEach(function (g) {
+    tree.appendChild(renderPositionCard(g.position, g.templates, cur));
+  });
+}
+
+function renderPositionCard(position, templates, currentJdId) {
+  const card = document.createElement('div');
+  card.className = 'position-card';
+  card.dataset.positionId = position.positionId;
+  card.draggable = true;
+  if (_positionCollapsed[position.positionId]) {
+    card.classList.add('collapsed');
+  }
+
+  // 卡片头
+  const header = document.createElement('div');
+  header.className = 'position-card-header';
+
+  const toggle = document.createElement('span');
+  toggle.className = 'position-toggle';
+  toggle.textContent = '▼';
+
+  const nameEl = document.createElement('div');
+  nameEl.className = 'position-name';
+  const countText = templates.length === 0 ? '空' : (templates.length + ' 个模板');
+  nameEl.innerHTML = escapeHtml(position.name) + '<span class="position-template-count">(' + countText + ')</span>';
+
+  const actions = document.createElement('div');
+  actions.className = 'position-actions';
+  actions.innerHTML =
+    '<button class="btn-rename-position" data-id="' + escapeHtml(position.positionId) + '">改名</button>' +
+    '<button class="btn-add-template" data-id="' + escapeHtml(position.positionId) + '">+ 添加模板</button>' +
+    '<button class="btn-del-position" data-id="' + escapeHtml(position.positionId) + '">删除岗位</button>' +
+    '<span class="position-drag-handle" title="拖拽调整岗位顺序">⋮⋮</span>';
+
+  header.appendChild(toggle);
+  header.appendChild(nameEl);
+  header.appendChild(actions);
+
+  // 头部点击 = 折叠 / 展开;点 actions 内按钮 stop propagation
+  header.addEventListener('click', function (e) {
+    if (e.target.closest('button') || e.target.closest('.position-drag-handle')) return;
+    card.classList.toggle('collapsed');
+    _positionCollapsed[position.positionId] = card.classList.contains('collapsed');
+  });
+
+  // 改名
+  header.querySelector('.btn-rename-position').addEventListener('click', function (e) {
+    e.stopPropagation();
+    renamePosition(position);
+  });
+  // 加模板(打开 JD 表单,positionId 已注入)
+  header.querySelector('.btn-add-template').addEventListener('click', function (e) {
+    e.stopPropagation();
+    openJDFormForNew(position.positionId);
+  });
+  // 删岗位
+  header.querySelector('.btn-del-position').addEventListener('click', function (e) {
+    e.stopPropagation();
+    deletePosition(position, templates.length);
+  });
+
+  card.appendChild(header);
+
+  // 卡片体
+  const body = document.createElement('div');
+  body.className = 'position-card-body';
+  if (templates.length === 0) {
+    const hint = document.createElement('div');
+    hint.className = 'position-empty-templates';
+    hint.textContent = '该岗位下还没有模板。点上方「+ 添加模板」新建。';
+    body.appendChild(hint);
   } else {
-    $('jd-empty').style.display = 'none';
-    $('jd-table').style.display = '';
-    list.forEach(function (t) {
-      // v0.25.0：删 M/N/K 三列（HR 反馈列表不需要看这些数字）
-      const tr = document.createElement('tr');
-      if (t.jdId === cur) tr.classList.add('jd-row-current');
-      tr.innerHTML =
-        '<td>' + escapeHtml(t.name) + '</td>' +
-        '<td class="actions-col">' +
-          '<button class="btn-jd-preview" data-id="' + escapeHtml(t.jdId) + '">预览</button> ' +
-          '<button class="btn-jd-edit" data-id="' + escapeHtml(t.jdId) + '">编辑</button> ' +
-          '<button class="btn-jd-del" data-id="' + escapeHtml(t.jdId) + '">删除</button>' +
-        '</td>';
-      tbody.appendChild(tr);
-    });
-    Array.from(tbody.querySelectorAll('.btn-jd-preview')).forEach(function (btn) {
-      btn.addEventListener('click', function () { openPromptPreviewByJdId(btn.dataset.id); });
-    });
-    Array.from(tbody.querySelectorAll('.btn-jd-edit')).forEach(function (btn) {
-      btn.addEventListener('click', function () { openJDFormForEdit(btn.dataset.id); });
-    });
-    Array.from(tbody.querySelectorAll('.btn-jd-del')).forEach(function (btn) {
-      btn.addEventListener('click', async function () {
-        const t = list.find(function (x) { return x.jdId === btn.dataset.id; });
-        if (!t) return;
-        if (!confirm('确认删除「' + t.name + '」？\n（不可撤销）')) return;
-        await self.BossJD.deleteTemplate(t.jdId);
-        await loadJDList();
-        setStatus('✓ JD 已删除', 'ok');
-      });
+    templates.forEach(function (t) {
+      body.appendChild(renderTemplateRow(t, position.positionId, currentJdId));
     });
   }
-  // 当前 JD 切换由侧边栏负责，admin 仅在列表中以 ● 高亮展示
+  card.appendChild(body);
+
+  // 岗位卡片拖拽事件(岗位间排序)
+  attachPositionDragHandlers(card);
+
+  return card;
+}
+
+function renderTemplateRow(template, positionId, currentJdId) {
+  const row = document.createElement('div');
+  row.className = 'template-row';
+  row.dataset.templateId = template.jdId;
+  row.dataset.positionId = positionId;
+  row.draggable = true;
+  if (template.jdId === currentJdId) row.classList.add('is-current');
+
+  const nameEl = document.createElement('div');
+  nameEl.className = 'template-name';
+  nameEl.textContent = template.name || '(未命名)';
+
+  const actions = document.createElement('div');
+  actions.className = 'template-actions';
+  // 按钮顺序:预览 / 复制 / 编辑 / 删除(沿用 v1.1.22 P2-7 视线扫描顺序)
+  actions.innerHTML =
+    '<button class="btn-tpl-preview" data-id="' + escapeHtml(template.jdId) + '">预览</button>' +
+    '<button class="btn-tpl-clone" data-id="' + escapeHtml(template.jdId) + '">复制</button>' +
+    '<button class="btn-tpl-edit" data-id="' + escapeHtml(template.jdId) + '">编辑</button>' +
+    '<button class="btn-tpl-del btn-del-template" data-id="' + escapeHtml(template.jdId) + '">删除</button>' +
+    '<span class="template-drag-handle" title="拖拽调整模板顺序">⋮⋮</span>';
+
+  row.appendChild(nameEl);
+  row.appendChild(actions);
+
+  // 按钮 handler
+  actions.querySelector('.btn-tpl-preview').addEventListener('click', function () {
+    openPromptPreviewByJdId(template.jdId);
+  });
+  actions.querySelector('.btn-tpl-clone').addEventListener('click', async function (e) {
+    const btn = e.currentTarget;
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      // 1) cloneTemplate 复制评估字段(不含 positionId — lib 层显式拷贝白名单)
+      const newJd = await self.BossJD.cloneTemplate(template.jdId);
+      // 2) 补一刀:把源 positionId 写到副本上,再 saveTemplate 整体回写(merge 安全)
+      //    这是"补 positionId"那一刀 — 是一次 saveTemplate 调用,不是两次独立写,
+      //    满足任务约束(避免两次完全独立 save 破坏 contentHash / updatedAt)
+      newJd.positionId = positionId;
+      await self.BossJD.saveTemplate(newJd);
+      await loadJDList();
+      openJDFormForEdit(newJd.jdId);
+      setStatus('✓ 已复制为「' + newJd.name + '」', 'ok');
+    } catch (err) {
+      btn.disabled = false;
+      setStatus('✗ 复制失败:' + (err.message || err), 'err');
+    }
+  });
+  actions.querySelector('.btn-tpl-edit').addEventListener('click', function () {
+    openJDFormForEdit(template.jdId);
+  });
+  actions.querySelector('.btn-tpl-del').addEventListener('click', async function () {
+    if (!confirm('确认删除模板「' + (template.name || '未命名') + '」?\n(不可撤销)')) return;
+    await self.BossJD.deleteTemplate(template.jdId);
+    await loadJDList();
+    setStatus('✓ 模板已删除', 'ok');
+  });
+
+  // 模板行拖拽事件(同岗位内排序)
+  attachTemplateDragHandlers(row);
+
+  return row;
+}
+
+// ============ 岗位 CRUD ============
+async function createNewPosition() {
+  const name = prompt('新岗位名称(对应 BOSS 端发的招聘职位名,沟通页按此与候选人 jobAligned 严格相等匹配):');
+  if (name === null) return;
+  const trimmed = String(name).trim();
+  if (!trimmed) {
+    alert('岗位名不能为空');
+    return;
+  }
+  try {
+    const saved = await self.BossPositions.savePosition({ name: trimmed });
+    // 新建岗位默认展开
+    _positionCollapsed[saved.positionId] = false;
+    await loadJDList();
+    setStatus('✓ 岗位「' + trimmed + '」已创建', 'ok');
+  } catch (e) {
+    setStatus('✗ 创建岗位失败:' + (e.message || e), 'err');
+  }
+}
+
+async function renamePosition(position) {
+  const next = prompt('修改岗位名(原: ' + position.name + ')', position.name);
+  if (next === null) return;
+  const trimmed = String(next).trim();
+  if (!trimmed) {
+    alert('岗位名不能为空');
+    return;
+  }
+  if (trimmed === position.name) return;
+  try {
+    await self.BossPositions.savePosition({
+      positionId: position.positionId,
+      name: trimmed
+    });
+    await loadJDList();
+    setStatus('✓ 岗位已改名为「' + trimmed + '」', 'ok');
+  } catch (e) {
+    setStatus('✗ 改名失败:' + (e.message || e), 'err');
+  }
+}
+
+async function deletePosition(position, templateCount) {
+  const msg = templateCount > 0
+    ? '确认删除岗位「' + position.name + '」?\n' +
+      '⚠️ 会级联删除该岗位下 ' + templateCount + ' 个模板,所有相关筛选条件、话术、自定义 prompt 一同丢失。\n(不可撤销)'
+    : '确认删除岗位「' + position.name + '」?(该岗位下无模板)';
+  if (!confirm(msg)) return;
+  if (templateCount > 0) {
+    // 二次确认 — 有模板的岗位删除影响大
+    if (!confirm('再次确认:删除岗位「' + position.name + '」 + ' + templateCount + ' 个模板?')) return;
+  }
+  try {
+    const r = await self.BossPositions.deletePosition(position.positionId, { cascade: true });
+    await loadJDList();
+    setStatus('✓ 已删除岗位「' + position.name + '」,级联删除 ' + r.deletedTemplatesCount + ' 个模板', 'ok');
+  } catch (e) {
+    setStatus('✗ 删除岗位失败:' + (e.message || e), 'err');
+  }
+}
+
+// ============ 拖拽排序(HTML5 原生)============
+// 设计:
+//   - 岗位卡片之间拖拽 → 调 BossPositions.reorderPositions(orderedIds)
+//   - 模板行在同一岗位内拖拽 → 调 BossPositions.reorderTemplatesInPosition(positionId, orderedIds)
+//   - 不允许跨岗位拖模板(dragenter 时若 srcPositionId !== thisPositionId 直接 reject)
+//   - 视觉:dragging 元素半透明;drop target 上下边显示蓝色横线(drag-over-top / drag-over-bottom)
+
+let _dragSource = null;       // { type: 'position'|'template', id, positionId? }
+
+function clearDragOverClasses(root) {
+  Array.from(root.querySelectorAll('.drag-over-top, .drag-over-bottom')).forEach(function (el) {
+    el.classList.remove('drag-over-top', 'drag-over-bottom');
+  });
+}
+
+function attachPositionDragHandlers(card) {
+  card.addEventListener('dragstart', function (e) {
+    // 只允许通过 handle 或 header 起拖;但模板行有自己的 dragstart 也会冒泡上来 — 用 srcElement 判断
+    if (e.target.closest('.template-row')) return;
+    _dragSource = { type: 'position', id: card.dataset.positionId };
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', card.dataset.positionId); } catch (_) {}
+    e.stopPropagation();
+  });
+  card.addEventListener('dragend', function () {
+    card.classList.remove('dragging');
+    _dragSource = null;
+    clearDragOverClasses($('position-tree'));
+  });
+  card.addEventListener('dragover', function (e) {
+    if (!_dragSource || _dragSource.type !== 'position') return;
+    if (_dragSource.id === card.dataset.positionId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = card.getBoundingClientRect();
+    const isAbove = e.clientY < rect.top + rect.height / 2;
+    card.classList.toggle('drag-over-top', isAbove);
+    card.classList.toggle('drag-over-bottom', !isAbove);
+  });
+  card.addEventListener('dragleave', function (e) {
+    // 离开本卡片范围才清(否则进入子元素也会触发 leave)
+    if (!card.contains(e.relatedTarget)) {
+      card.classList.remove('drag-over-top', 'drag-over-bottom');
+    }
+  });
+  card.addEventListener('drop', async function (e) {
+    if (!_dragSource || _dragSource.type !== 'position') return;
+    if (_dragSource.id === card.dataset.positionId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = card.getBoundingClientRect();
+    const isAbove = e.clientY < rect.top + rect.height / 2;
+    const sourceId = _dragSource.id;
+    const targetId = card.dataset.positionId;
+    card.classList.remove('drag-over-top', 'drag-over-bottom');
+    await applyPositionReorder(sourceId, targetId, isAbove);
+  });
+}
+
+async function applyPositionReorder(sourceId, targetId, insertBefore) {
+  const tree = $('position-tree');
+  const cards = Array.from(tree.querySelectorAll('.position-card'));
+  const ids = cards.map(function (c) { return c.dataset.positionId; });
+  const srcIdx = ids.indexOf(sourceId);
+  if (srcIdx === -1) return;
+  ids.splice(srcIdx, 1);
+  let tgtIdx = ids.indexOf(targetId);
+  if (tgtIdx === -1) return;
+  if (!insertBefore) tgtIdx++;
+  ids.splice(tgtIdx, 0, sourceId);
+  try {
+    await self.BossPositions.reorderPositions(ids);
+    await loadJDList();
+  } catch (e) {
+    setStatus('✗ 岗位排序保存失败:' + (e.message || e), 'err');
+  }
+}
+
+function attachTemplateDragHandlers(row) {
+  row.addEventListener('dragstart', function (e) {
+    _dragSource = {
+      type: 'template',
+      id: row.dataset.templateId,
+      positionId: row.dataset.positionId
+    };
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', row.dataset.templateId); } catch (_) {}
+    e.stopPropagation();  // 别冒泡触发外层 position-card 的 dragstart
+  });
+  row.addEventListener('dragend', function () {
+    row.classList.remove('dragging');
+    _dragSource = null;
+    clearDragOverClasses($('position-tree'));
+  });
+  row.addEventListener('dragover', function (e) {
+    if (!_dragSource || _dragSource.type !== 'template') return;
+    // 不允许跨岗位拖
+    if (_dragSource.positionId !== row.dataset.positionId) return;
+    if (_dragSource.id === row.dataset.templateId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = row.getBoundingClientRect();
+    const isAbove = e.clientY < rect.top + rect.height / 2;
+    row.classList.toggle('drag-over-top', isAbove);
+    row.classList.toggle('drag-over-bottom', !isAbove);
+  });
+  row.addEventListener('dragleave', function (e) {
+    if (!row.contains(e.relatedTarget)) {
+      row.classList.remove('drag-over-top', 'drag-over-bottom');
+    }
+  });
+  row.addEventListener('drop', async function (e) {
+    if (!_dragSource || _dragSource.type !== 'template') return;
+    if (_dragSource.positionId !== row.dataset.positionId) return;
+    if (_dragSource.id === row.dataset.templateId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = row.getBoundingClientRect();
+    const isAbove = e.clientY < rect.top + rect.height / 2;
+    const sourceId = _dragSource.id;
+    const targetId = row.dataset.templateId;
+    const positionId = row.dataset.positionId;
+    row.classList.remove('drag-over-top', 'drag-over-bottom');
+    await applyTemplateReorder(positionId, sourceId, targetId, isAbove);
+  });
+}
+
+async function applyTemplateReorder(positionId, sourceId, targetId, insertBefore) {
+  // 从当前 DOM 抓该 position 下所有模板行的 templateId 顺序
+  const card = $('position-tree').querySelector('.position-card[data-position-id="' + positionId + '"]');
+  if (!card) return;
+  const rows = Array.from(card.querySelectorAll('.template-row'));
+  const ids = rows.map(function (r) { return r.dataset.templateId; });
+  const srcIdx = ids.indexOf(sourceId);
+  if (srcIdx === -1) return;
+  ids.splice(srcIdx, 1);
+  let tgtIdx = ids.indexOf(targetId);
+  if (tgtIdx === -1) return;
+  if (!insertBefore) tgtIdx++;
+  ids.splice(tgtIdx, 0, sourceId);
+  try {
+    await self.BossPositions.reorderTemplatesInPosition(positionId, ids);
+    await loadJDList();
+  } catch (e) {
+    setStatus('✗ 模板排序保存失败:' + (e.message || e), 'err');
+  }
 }
 
 // === 动态条件行（must / optional） ===
@@ -1126,7 +1239,10 @@ function collectJdGreetTemplates() {
   return { greetTemplates: out, defaultGreetTemplateId: defaultId };
 }
 
-function openJDFormForNew() {
+function openJDFormForNew(positionId) {
+  // v1.1.23 P3-4:positionId 是从"+ 添加模板"按钮注入的,标记当前编辑模板归属哪个岗位
+  // 表单保存(saveJDForm)时通过 _editingPositionId 写到 template.positionId
+  _editingPositionId = positionId || '';
   $('jd-form-title').textContent = '新建 JD 模板';
   $('jd-edit-id').value = '';
   $('jd-name').value = '';
@@ -1134,8 +1250,16 @@ function openJDFormForNew() {
   renderConditionList('must-list', 'M', [{ text: '' }]);
   renderConditionList('opt-list', 'O', [{ text: '' }]);
   $('jd-threshold').value = '0';
-  // v0.25.2：默认 1 个空话术行
-  renderJdGreetTemplates([], '');
+  // v1.1.15:新建 JD 默认带 1 条招呼语(HR 可改 / 删)。
+  //   原 v0.25.2 默认空话术,HR 需手填才能用 autoGreet,导致刚建完 JD autoGreet 一直走 skip。
+  const defaultGreet = (self.BossJD && typeof self.BossJD.buildDefaultGreetTemplate === 'function')
+    ? self.BossJD.buildDefaultGreetTemplate()
+    : null;
+  if (defaultGreet) {
+    renderJdGreetTemplates([defaultGreet], defaultGreet.id);
+  } else {
+    renderJdGreetTemplates([], '');
+  }
   _currentEditCustomPrompt = null;  // 新建时 customPrompt 默认 null
   $('jd-form-status').textContent = '';
   $('jd-form-status').className = 'test-result';
@@ -1150,6 +1274,8 @@ async function openJDFormForEdit(jdId) {
     alert('该 JD 模板不存在或已被删除');
     return;
   }
+  // v1.1.23 P3-4:编辑现有模板时把它的 positionId 记下,保存时回写(保留岗位归属)
+  _editingPositionId = t.positionId || '';
   $('jd-form-title').textContent = '编辑 JD 模板';
   $('jd-edit-id').value = t.jdId;
   $('jd-name').value = t.name || '';
@@ -1168,6 +1294,7 @@ async function openJDFormForEdit(jdId) {
 
 function closeJDForm() {
   $('jd-form').style.display = 'none';
+  _editingPositionId = '';  // v1.1.23 P3-4:清岗位归属缓存
 }
 
 // 从当前 JD 表单状态构造 jd 对象（含临时 id，供 PromptBuilder 用）
@@ -1184,6 +1311,8 @@ function buildJdFromForm() {
   return {
     jdId: $('jd-edit-id').value || undefined,
     name: name,
+    // v1.1.23 P3-4:写入岗位归属 — 新建从"+ 添加模板"入口拿 positionId,编辑沿用既有
+    positionId: _editingPositionId || undefined,
     mustConditions: must,
     optionalConditions: opt,
     optionalThreshold: Number.isInteger(K) && K >= 0 ? K : 0,
@@ -1216,7 +1345,9 @@ async function saveJDForm() {
   }
 }
 
-$('btn-jd-new').addEventListener('click', openJDFormForNew);
+// v1.1.23 P3-4:全局"新建 JD"入口删除,改为每个岗位卡片的"+ 添加模板"按钮
+//   全局新建岗位入口仍在 — 通过 #btn-position-new 触发
+$('btn-position-new').addEventListener('click', createNewPosition);
 $('btn-jd-cancel').addEventListener('click', closeJDForm);
 $('btn-jd-save').addEventListener('click', saveJDForm);
 
@@ -1539,105 +1670,11 @@ loadAll();
 loadJDList();
 // v0.25.2：删 loadGreetList 启动调用（话术管理 section 已删）
 
-// ===== v0.17.0：数据导入 / 导出 =====
-const DB_NAME = 'boss-sniffer-db';
-const DB_VERSION = 5;
-
-function openIDB() {
-  return new Promise(function (resolve, reject) {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    // 防御性 onupgradeneeded：与 lib/fsa-backup.js 一致，兜底建 v5 新 store
-    req.onupgradeneeded = function (e) {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains('fsa_state')) {
-        db.createObjectStore('fsa_state', { keyPath: 'key' });
-      }
-      if (!db.objectStoreNames.contains('pending_fsa_writes')) {
-        const s = db.createObjectStore('pending_fsa_writes', { keyPath: 'month' });
-        s.createIndex('enqueuedAt', 'enqueuedAt', { unique: false });
-      }
-    };
-    req.onsuccess = function () { resolve(req.result); };
-    req.onerror = function () { reject(req.error); };
-  });
-}
-
-function bulkWrite(db, storeName, items) {
-  if (!items || items.length === 0) return Promise.resolve(0);
-  return new Promise(function (resolve, reject) {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    let count = 0;
-    items.forEach(function (it) {
-      if (storeName === 'events') {
-        // events 是 autoIncrement id，导入时去掉 id 让其重新分配（避免与现有 id 冲突）
-        const copy = Object.assign({}, it);
-        delete copy.id;
-        store.add(copy);
-      } else {
-        // evaluations 是 candidateId keyPath，put 自然去重（覆盖同 candidateId 旧记录）
-        store.put(it);
-      }
-      count++;
-    });
-    tx.oncomplete = function () { resolve(count); };
-    tx.onerror = function () { reject(tx.error); };
-  });
-}
-
-const btnImportBackup = document.getElementById('btn-import-backup');
+// ===== 数据导入 / 导出（v1.0.3：FSA 备份导入已删，仅留 JD 模板导入导出）=====
 const btnExportJd = document.getElementById('btn-export-jd');
 const btnImportJd = document.getElementById('btn-import-jd');
 const fileImportJd = document.getElementById('file-import-jd');
 const importResult = document.getElementById('import-result');
-
-if (btnImportBackup) {
-  btnImportBackup.onclick = async function () {
-    if (!window.showDirectoryPicker) {
-      importResult.textContent = '当前浏览器不支持 FSA，无法导入。请用 Chrome / Edge 最新版。';
-      return;
-    }
-    try {
-      const handle = await window.showDirectoryPicker({ mode: 'read', id: 'boss-sniffer-import' });
-      const months = [];
-      for await (const entry of handle.values()) {
-        if (entry.kind === 'file' && /^\d{4}-\d{2}\.json$/.test(entry.name)) {
-          months.push(entry);
-        }
-      }
-      if (months.length === 0) {
-        importResult.textContent = '目录里没有 YYYY-MM.json 备份文件';
-        return;
-      }
-      importResult.textContent = '导入中...（' + months.length + ' 个月份）';
-      let evalCount = 0, eventCount = 0;
-      const db = await openIDB();
-      for (let i = 0; i < months.length; i++) {
-        const fh = months[i];
-        const file = await fh.getFile();
-        let data;
-        try { data = JSON.parse(await file.text()); }
-        catch (e) {
-          console.warn('[admin import] 跳过损坏的 ' + fh.name + ':', e.message);
-          continue;
-        }
-        if (Array.isArray(data.evaluations)) {
-          evalCount += await bulkWrite(db, 'evaluations', data.evaluations);
-        }
-        if (Array.isArray(data.events)) {
-          eventCount += await bulkWrite(db, 'events', data.events);
-        }
-      }
-      importResult.textContent = '导入完成：' + evalCount + ' 条评估、' + eventCount + ' 条事件';
-    } catch (e) {
-      if (e.name === 'AbortError') {
-        importResult.textContent = '已取消';
-      } else {
-        importResult.textContent = '导入失败：' + e.message;
-      }
-    }
-  };
-}
 
 if (btnExportJd) {
   btnExportJd.onclick = async function () {
@@ -1695,15 +1732,25 @@ if (fileImportJd) {
 
   async function jumpToJd() {
     try {
-      // 等 JD list 加载完（loadJdList 是顶层 await 不到的，轮询 .btn-jd-edit 出现）
+      // v1.1.23 P3-4:旧 .btn-jd-edit 改为 .btn-tpl-edit(模板行按钮新 class)
+      // 等岗位树加载完成
       let tries = 0;
-      while (tries < 40 && !document.querySelector('.btn-jd-edit[data-id="' + jdId + '"]')) {
+      while (tries < 40 && !document.querySelector('.btn-tpl-edit[data-id="' + jdId + '"]')) {
         await new Promise(function (r) { setTimeout(r, 100); });
         tries++;
       }
       if (typeof openJDFormForEdit !== 'function') {
-        console.warn('[Admin] openJDFormForEdit 未就绪，跳过 URL 跳转');
+        console.warn('[Admin] openJDFormForEdit 未就绪,跳过 URL 跳转');
         return;
+      }
+      // 确保对应岗位卡片是展开的(否则编辑按钮虽在 DOM 但不可见,不影响逻辑)
+      const targetBtn = document.querySelector('.btn-tpl-edit[data-id="' + jdId + '"]');
+      if (targetBtn) {
+        const card = targetBtn.closest('.position-card');
+        if (card && card.classList.contains('collapsed')) {
+          card.classList.remove('collapsed');
+          if (card.dataset.positionId) _positionCollapsed[card.dataset.positionId] = false;
+        }
       }
       await openJDFormForEdit(jdId);
 
@@ -1753,7 +1800,7 @@ if (fileImportJd) {
     if (!confirm('⚠️ 第 2/2 步：操作不可撤销。最后确认要清空 evaluations 表？')) return;
     setStatus('正在清空...', '#666');
     try {
-      const resp = await chrome.runtime.sendMessage({ type: 'CLEAR_EVALUATIONS' });
+      const resp = await chrome.runtime.sendMessage({ type: BossMessageTypes.CLEAR_EVALUATIONS });
       if (resp && resp.ok) {
         setStatus('✅ evaluations 表已清空', '#0a0');
       } else {
@@ -1770,7 +1817,7 @@ if (fileImportJd) {
     if (!confirm('⚠️ 第 3/3 步：最后一次确认 — 真的清空 captures + evaluations + events 三个表？')) return;
     setStatus('正在清空...', '#666');
     try {
-      const resp = await chrome.runtime.sendMessage({ type: 'CLEAR' });
+      const resp = await chrome.runtime.sendMessage({ type: BossMessageTypes.CLEAR });
       if (resp && resp.ok) {
         setStatus('✅ captures + evaluations + events 三表已清空', '#0a0');
       } else {
@@ -1795,44 +1842,5 @@ if (fileImportJd) {
   }
 })();
 
-// ============ v0.22.5 · Phase 3·3c 前置：IDB 备份按钮 ============
-// HR 可选在 schema 升级前一键导出全 store JSON 作回滚兜底
-// 复用 sidepanel diag bundle 的 Blob.click 下载模式
-$('btn-export-idb-backup').addEventListener('click', async function () {
-  const btn = $('btn-export-idb-backup');
-  const status = $('idb-backup-status');
-  function setStatus(text, color) {
-    if (!status) return;
-    status.textContent = text || '';
-    status.style.color = color || '#666';
-  }
-  btn.disabled = true;
-  setStatus('⏳ 正在读取 IDB...', '#666');
-  try {
-    const resp = await chrome.runtime.sendMessage({ type: 'EXPORT_IDB_BUNDLE' });
-    if (!resp || !resp.ok) throw new Error((resp && resp.error) || '未知错误');
-    const bundle = resp.bundle;
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const now = new Date();
-    const stamp = now.getFullYear() +
-      String(now.getMonth() + 1).padStart(2, '0') +
-      String(now.getDate()).padStart(2, '0') + '-' +
-      String(now.getHours()).padStart(2, '0') +
-      String(now.getMinutes()).padStart(2, '0');
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'boss-sniffer-idb-backup-' + stamp + '.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-    const totalRows = Object.keys(bundle.counts || {}).reduce(function (s, k) { return s + (bundle.counts[k] || 0); }, 0);
-    setStatus('✅ 已导出 ' + totalRows + ' 行（dbVersion=' + bundle.dbVersion + '）', '#0a0');
-  } catch (err) {
-    setStatus('❌ 导出失败：' + ((err && err.message) || err), '#c33');
-    console.error('[BOSS-Sniffer admin] export IDB backup failed:', err);
-  } finally {
-    btn.disabled = false;
-  }
-});
+// v1.0.14：「📦 导出 IDB 备份 JSON」按钮 + handler 已删（灾备走重装 + chrome.storage.sync 平台同步）
+// background.js 端 EXPORT_IDB_BUNDLE message handler 保留（供未来诊断包扩展用），admin UI 不再触发。

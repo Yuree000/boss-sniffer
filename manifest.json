@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "BOSS Sniffer",
-  "version": "1.0.2",
-  "description": "v1.0.2 沟通页浏览数 label 改回「浏览数」(原 v1.0.1 label/placeholder 都是「全部」视觉上像两个 input)；placeholder 保留「全部」。详见 CHANGELOG.md。",
+  "version": "1.1.25",
+  "description": "v1.1.25 sprint 外修补:沟通页一级 tab 校验闸门 — 仅「新招呼」tab 下可启动筛选,错 tab 早退 + toast 引导(修历史 bug:全部/沟通中 tab 下也能扫候选人导致筛选错乱)。详见 CHANGELOG.md。",
   "permissions": ["storage", "sidePanel", "debugger", "tabs", "permissions", "alarms"],
   "host_permissions": [
     "*://*.zhipin.com/*",
@@ -37,7 +37,7 @@
     },
     {
       "matches": ["*://*.zhipin.com/*"],
-      "js": ["content.js"],
+      "js": ["lib/message-types.js", "content.js"],
       "run_at": "document_start",
       "all_frames": true
     }

@@ -383,20 +383,23 @@
       return { ok: false, error: 'scan-empty', uid: String(uid) };
     }
 
-    // v0.17.1.2 在线简历 iframe 扫描：失败不影响主流程，rawScan.resumeFullText=null 即可
-    let resumeScan = null;
-    try {
-      resumeScan = await _scanResumeIframe();
-    } catch (e) {
-      resumeScan = { ok: false, error: 'scan-resume-iframe-threw: ' + ((e && e.message) || e) };
-    }
-    if (resumeScan && resumeScan.ok) {
-      rawScan.resumeFullText = resumeScan.resumeFullText;
-      rawScan.resumeTextLen = resumeScan.resumeTextLen;
-    } else {
-      rawScan.resumeFullText = null;
-      rawScan.resumeScanError = (resumeScan && resumeScan.error) || 'unknown';
-    }
+    // v1.1.11 BUG fix:禁用 _scanResumeIframe 调用(根因第二次确认 — 见诊断 bundle
+    //   boss-sniffer-diag-20260521-2344.json 李晨洋 661243678 record)
+    //
+    // 实测证据:
+    //   "resumeFullText": "!function(){var e=document,t=e.createElement(\"script\"); ... vite-legacy-entry ..."
+    //   抓到的是 BOSS 的 vite 启动器 JavaScript,不是简历内容 — 沟通页 c-resume iframe
+    //   已被 WASM-canvas 化(跟 POC A11 推荐页结论一致),DOM 没有简历文本。
+    //
+    // 副作用:
+    //   - _closeResumeDialog 用 .boss-dialog.resume-container 判定"是否关闭",可能误判
+    //     → 弹窗留在屏幕上遮挡下一个候选人卡片 → autoMark find-card 失败、卡片叠加视觉 bug
+    //   - 每候选人浪费 4-8 秒等弹窗超时
+    //
+    // _scanResumeIframe / _findOnlineResumeButton / _waitForResumeIframe / _closeResumeDialog
+    // 函数本身保留(不删),供未来如果 BOSS 改回 DOM 渲染时重启用,只改这一处。
+    rawScan.resumeFullText = null;
+    rawScan.resumeScanError = 'disabled-v1.1.11-wasm-canvas-and-stuck-dialog';
 
     return { ok: true, uid: String(uid), scan: rawScan, waitedMs: Date.now() - clickedAt };
   }
@@ -747,7 +750,54 @@
     return new Promise(function (r) { setTimeout(r, ms); });
   }
 
+  // v1.1.25:BOSS 沟通页一级 tab(顶部)active 名提取。
+  //   DOM 结构(基于诊断 probe 20260525-1104 锁定):
+  //     <div class="chat-label-item selected">         ← active 标识
+  //       <span class="badge">
+  //         <span class="content">新招呼<em class="num">(12)</em></span>
+  //       </span>
+  //     </div>
+  //   未选中状态:<div class="chat-label-item">(无 selected)
+  //   返回 active tab 的纯文字名(剥掉徽章数字 (12)),无 active 或 DOM 缺失时返回 ''
+  function getActiveSayhiTabName() {
+    try {
+      const sel = document.querySelector('.chat-label-item.selected .content');
+      if (!sel) return '';
+      return normalizeSayhiTabName(sel.textContent || '');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  // 纯函数:把 ".content" textContent 中的徽章数字 / 空白剥掉,返回纯 tab 名
+  //   输入 '新招呼\n                    (12)' → 输出 '新招呼'
+  //   输入 '已交换电话' → 输出 '已交换电话'
+  //   输入 '' / null → 输出 ''
+  function normalizeSayhiTabName(raw) {
+    if (typeof raw !== 'string' || !raw) return '';
+    // 1) 剥掉 (数字) 形如 (12) 的徽章
+    // 2) 压缩所有空白
+    return raw.replace(/\(\d+\)/g, '').replace(/\s+/g, '').trim();
+  }
+
   async function scanSayhiCards() {
+    // v1.1.25:扫描前 tab 校验 — 不在「新招呼」一级 tab 下时直接 return 空,不浪费扫描开销。
+    //   关闭了 v1.1.24 之前的 bug:用户在「全部 / 沟通中 / 已回应」等任何 tab 下点「开始处理本批」都能扫到候选人,
+    //   导致筛选错乱(老候选人被当新招呼评估)。
+    const activeSayhiTab = getActiveSayhiTabName();
+    if (activeSayhiTab !== '新招呼') {
+      return {
+        candidates: [],
+        stats: {
+          domTotal: 0,
+          url: location.href,
+          scrollContainerFound: false,
+          wrongTab: true,
+          activeSayhiTab: activeSayhiTab || '(未识别)'
+        }
+      };
+    }
+
     const roots = [document];
     const iframes = document.querySelectorAll('iframe');
     for (let i = 0; i < iframes.length; i++) {
@@ -827,15 +877,18 @@
     // v0.13.2 诊断：扫到 0 时给 sidepanel 一些 stats 反馈
     let domTotal = 0;
     try { domTotal = document.querySelectorAll('.geek-item').length; } catch (e) {}
+    // v1.1.25:tab 校验已经在函数开头通过 → 此处 activeSayhiTab 必然是「新招呼」,带回去用于 sidepanel toast/统计
     return {
       candidates: Array.from(dedup.values()),
       stats: {
         domTotal: domTotal,
         url: location.href,
-        scrollContainerFound: roots.length > 0  // 简化标记，详细在 candidates 长度上看
+        scrollContainerFound: roots.length > 0,
+        activeSayhiTab: '新招呼'
       }
     };
   }
+
 
   function findGeekVueData(el) {
     // 沿 parentElement 找 __vue__ 实例，再沿 $parent 链展开 5 层
@@ -1097,6 +1150,21 @@
       result.error = '未知 action: ' + action + '（v0.18.0 起仅支持 mark-unsuitable；request-resume 改走 executeGreetThenRequestResume）';
       return result;
     }
+    // v1.1.12 防御:autoMark 之前先 ESC × 2 关闭任何残留弹窗(防御性 — v1.1.11 禁用了
+    // _scanResumeIframe 后理论上不会有简历弹窗,但 HR 可能手动开了别的弹窗,或 BOSS 自己弹了
+    // 提示框。残留弹窗会遮挡候选人卡片导致 find-card 失败,跟 diag bundle 里看到的
+    // failedStep:"find-card" 报错对得上)。
+    try {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+      await new Promise(function (r) { setTimeout(r, 150); });
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+      await new Promise(function (r) { setTimeout(r, 150); });
+      _logStep(logs, 'preEscDefense', true);
+    } catch (e) {
+      _logStep(logs, 'preEscDefense', false, String((e && e.message) || e));
+    }
     const card = await _selectSayhiCard(uid, logs);
     if (!card) {
       result.error = '选中卡片失败（详见 logs）';
@@ -1141,11 +1209,41 @@
     _logStep(logs, 'realClickUnsuitableBtn', true, { x: cx, y: cy });
     // 等左侧卡片消失（操作成功标志，按用户描述）
     // v0.24.6：6s → 15s（HR 反馈 BOSS 后端有时刷新慢，6s 超时过严，partial=true 误判）
-    const gone = await _waitFor(function () {
+    let gone = await _waitFor(function () {
       return !_findSayhiCardByUid(uid);
     }, 15000);
     if (!gone) {
-      _logStep(logs, 'waitCardGone', false, '15s 内卡片未消失（可能 BOSS 仍在刷新，或 click 未触发 BOSS 业务）');
+      // v1.0.13：wait-card-gone 失败时重试 1 次真点击(跟 v0.22.4 editor-input 重试同模式)
+      //   v1.0.12 诊断证实 chrome.debugger 派发完全成功(probe 命中「不合适」按钮),
+      //   但 BOSS 业务偶发拒绝 → 重新取最新坐标 + 再派 1 次,提升连续 mark 成功率
+      _logStep(logs, 'waitCardGoneRetry', true, { reason: '首次 15s 超时,重试一次真点击' });
+      const btn2 = _findClickableByText('不合适');
+      if (btn2) {
+        try { btn2.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {
+          try { btn2.scrollIntoView(); } catch (e2) {}
+        }
+        await new Promise(function (r) { setTimeout(r, 200); });
+        const rect2 = btn2.getBoundingClientRect();
+        const cx2 = Math.round(rect2.x + rect2.width / 2);
+        const cy2 = Math.round(rect2.y + rect2.height / 2);
+        if (rect2.width && rect2.height && cx2 > 0 && cy2 > 0) {
+          const retryResp = await _requestRealClick(cx2, cy2);
+          _logStep(logs, 'realClickRetry', !!(retryResp && retryResp.ok), { x: cx2, y: cy2 });
+          if (retryResp && retryResp.ok) {
+            // 重试派发成功 → 再等 15s 看卡片消失
+            gone = await _waitFor(function () {
+              return !_findSayhiCardByUid(uid);
+            }, 15000);
+          }
+        } else {
+          _logStep(logs, 'realClickRetry', false, '重试时按钮坐标无效');
+        }
+      } else {
+        _logStep(logs, 'realClickRetry', false, '重试时未找到不合适按钮（BOSS UI 可能已变）');
+      }
+    }
+    if (!gone) {
+      _logStep(logs, 'waitCardGone', false, '15s 内卡片未消失（含 1 次重试,可能 BOSS 仍在刷新或拒绝 click）');
       result.ok = true;  // 不算硬失败：标 partial
       result.partial = true;
       result.failedStep = 'wait-card-gone';  // v0.22.4 · 3b：UI 未刷新，bg partial-continue
@@ -1401,11 +1499,24 @@
       dryRun: !!dryRun,
       logs: logs
     };
-    if (!greetText || String(greetText).trim().length < 5) {
-      result.error = '话术文本太短或缺失';
-      result.failedStep = 'validate-greet-text';  // v0.22.4 · 3b
-      _logStep(logs, 'validateGreetText', false, { len: (greetText && greetText.length) || 0 });
-      return result;
+    // v1.1.15:取消话术长度门槛(原 < 5 字符即 fail)。理由:
+    //   1. 话术由 HR 在 admin 手填,不是 LLM 生成,不存在"半截话术"问题
+    //   2. BOSS 自身不限制话术长度;1-4 字符的「您好」「在吗」「请问」都是 HR 真实场景
+    //   3. 错误提示"话术文本太短"反人类(HR 第一反应是"扩展坏了"而非"我没配话术")
+    //   真异常(null/空字符串/纯空格)由后续 _setEditorText + submit-btn-disabled 自然兜底,
+    //   不需要预校验。v1.1.15 同时给所有已存在/新建 JD 默认注入 1 条话术(lib/jd-templates.js
+    //   DEFAULT_GREET_TEXT),正常路径下 greetText 永不为空。
+    // v1.1.12 防御:autoGreet 之前先 ESC × 2 关闭残留弹窗(跟 executeSayhiAction 同款)
+    try {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+      await new Promise(function (r) { setTimeout(r, 150); });
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+      await new Promise(function (r) { setTimeout(r, 150); });
+      _logStep(logs, 'preEscDefense', true);
+    } catch (e) {
+      _logStep(logs, 'preEscDefense', false, String((e && e.message) || e));
     }
     // 1) 选中候选人卡片（复用 _selectSayhiCard，含等工具栏出现）
     const card = await _selectSayhiCard(uid, logs);

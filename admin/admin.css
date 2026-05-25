@@ -319,49 +319,167 @@ button.secondary {
 .jd-list-wrap {
   margin: 12px 0;
 }
-.jd-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+
+/* === v1.1.23 P3-4:BOSS 岗位树形结构 === */
+.position-tree-wrap {
+  margin: 12px 0;
 }
-.jd-table thead th {
-  text-align: left;
-  padding: 8px 10px;
-  background: #f6f7f9;
+#position-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.position-card {
+  border: 1px solid #e1e4e8;
+  border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+  transition: box-shadow 0.15s;
+}
+.position-card.dragging {
+  opacity: 0.4;
+}
+.position-card.drag-over-top {
+  box-shadow: 0 -3px 0 0 #2467f0 inset, 0 0 0 1px #8bb7ff;
+}
+.position-card.drag-over-bottom {
+  box-shadow: 0 3px 0 0 #2467f0 inset, 0 0 0 1px #8bb7ff;
+}
+.position-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f6f8fa;
   border-bottom: 1px solid #e1e4e8;
-  font-weight: 600;
-  font-size: 12px;
-  color: #555;
+  cursor: pointer;
+  user-select: none;
 }
-.jd-table tbody td {
-  padding: 8px 10px;
-  border-bottom: 1px solid #eef0f3;
-  vertical-align: middle;
+.position-card-header:hover {
+  background: #eef1f4;
 }
-.jd-table tbody tr:last-child td {
+.position-card.collapsed .position-card-header {
   border-bottom: none;
 }
-.jd-table .actions-col {
-  width: 130px;
-  text-align: right;
-  white-space: nowrap;
+.position-toggle {
+  flex: 0 0 14px;
+  color: #6b7177;
+  font-size: 11px;
+  transition: transform 0.15s;
 }
-.jd-table tbody tr.jd-row-current {
-  background: #f0f7ff;
+.position-card.collapsed .position-toggle {
+  transform: rotate(-90deg);
 }
-.jd-table tbody tr.jd-row-current td:first-child {
+.position-name {
+  flex: 1;
+  font-size: 14px;
   font-weight: 600;
-  position: relative;
+  color: #1f2328;
+  min-width: 0;
+  word-break: break-word;
 }
-.jd-table tbody tr.jd-row-current td:first-child::before {
-  content: '● ';
-  color: #2467f0;
-  margin-right: 2px;
+.position-template-count {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #6b7177;
 }
-.jd-table .actions-col button {
+.position-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.position-actions button {
   font-size: 12px;
   padding: 3px 10px;
 }
+.position-drag-handle {
+  cursor: grab;
+  color: #8b949e;
+  font-size: 16px;
+  padding: 2px 6px;
+  user-select: none;
+}
+.position-drag-handle:active {
+  cursor: grabbing;
+}
+.position-card-body {
+  padding: 4px 0;
+}
+.position-card.collapsed .position-card-body {
+  display: none;
+}
+.template-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 8px 26px;
+  border-bottom: 1px solid #eef0f3;
+  font-size: 13px;
+}
+.template-row:last-child {
+  border-bottom: none;
+}
+.template-row.dragging {
+  opacity: 0.4;
+}
+.template-row.drag-over-top {
+  box-shadow: 0 -2px 0 0 #2467f0 inset;
+}
+.template-row.drag-over-bottom {
+  box-shadow: 0 2px 0 0 #2467f0 inset;
+}
+.template-row.is-current {
+  background: #f0f7ff;
+}
+.template-row.is-current .template-name::before {
+  content: '● ';
+  color: #2467f0;
+}
+.template-name {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+  color: #24292f;
+}
+.template-row.is-current .template-name {
+  font-weight: 600;
+}
+.template-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.template-actions button {
+  font-size: 12px;
+  padding: 3px 9px;
+}
+.template-drag-handle {
+  cursor: grab;
+  color: #8b949e;
+  font-size: 14px;
+  padding: 1px 6px;
+  user-select: none;
+}
+.template-drag-handle:active {
+  cursor: grabbing;
+}
+.position-empty-templates {
+  padding: 10px 14px 10px 26px;
+  font-size: 12px;
+  color: #888;
+  font-style: italic;
+}
+.btn-del-position {
+  color: #a33;
+  border-color: #f0c2c2;
+}
+.btn-del-template {
+  color: #a33;
+}
+
 .jd-empty {
   padding: 24px;
   text-align: center;

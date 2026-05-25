@@ -12,7 +12,7 @@ const expandedCardIds = new Set();
 function locateCandidateInPage(candidateId, encryptUid) {
   try {
     chrome.runtime.sendMessage({
-      type: 'LOCATE_CANDIDATE',
+      type: BossMessageTypes.LOCATE_CANDIDATE,
       candidateId: candidateId,
       encryptUid: encryptUid
     }, function (resp) {
@@ -207,12 +207,7 @@ function buildConditionsList(evalRecord, mustConditions, optionalConditions) {
   return wrap;
 }
 
-function escapeHtml(s) {
-  if (s === null || s === undefined) return '';
-  return String(s).replace(/[&<>"']/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-  });
-}
+const escapeHtml = window.BossUiUtils.escapeHtml; // v1.1.22 提到 lib/ui-utils.js
 
 // ===== 评估卡渲染 =====
 // 紧凑卡片渲染（S3.6）：每张卡只显示「姓名 · 场景 · 决策 · sayHi 标」
@@ -220,6 +215,9 @@ function escapeHtml(s) {
 // pass：右侧加 ▶ 箭头，点击展开主因（必要不达 / 信息缺 / 可选不足）+ LLM 说明
 // 评估失败：同 pass 处理，展开有错误描述 + 重试按钮
 // 评估中：极简，无展开
+// v1.1.23 P3 后:推荐页/沟通页主路径已切到 renderMultiEvalCard(多模板渲染)。
+// 本函数保留作为「单评估展开 / 重试 / hr-mark-wrong」的细节模板供后续按需调用,
+// 主流程不再直接 dispatch 它。
 function renderEvaluation(record) {
   const c = record.candidate || {};
   const e = record.evaluation || {};
@@ -272,6 +270,42 @@ function renderEvaluation(record) {
   decisionTag.className = 'decision ' + cls;
   decisionTag.textContent = decisionLabel(e.decision, status);
   right.appendChild(decisionTag);
+
+  // v1.1.7: HR 反馈通道 — 标 LLM 错判(仅评估已出结果时显示)
+  // v1.1.16: tooltip 文案从"LLM 判错"统一为"LLM 错判"(跟看板列名一致)
+  // 默认无 hrFeedback = LLM 对; 点一下标错,再点取消
+  if (status === 'done' && (e.decision === '符合' || e.decision === 'pass')) {
+    const markBtn = document.createElement('span');
+    markBtn.className = 'hr-mark-wrong-btn';
+    const initiallyMarked = !!(record.hrFeedback && record.hrFeedback.markedWrong);
+    if (initiallyMarked) markBtn.classList.add('marked');
+    markBtn.textContent = initiallyMarked ? '⚠已标错' : '标错';
+    markBtn.title = initiallyMarked ? '已标记 LLM 错判 · 点击取消' : '标记 LLM 错判';
+    markBtn.addEventListener('click', async function (ev) {
+      ev.stopPropagation();
+      if (markBtn.dataset.busy === '1') return;
+      const willMark = !markBtn.classList.contains('marked');
+      markBtn.dataset.busy = '1';
+      markBtn.style.opacity = '0.5';
+      try {
+        const type = willMark ? BossMessageTypes.MARK_LLM_WRONG : BossMessageTypes.UNMARK_LLM_WRONG;
+        const resp = await chrome.runtime.sendMessage({ type: type, candidateId: record.candidateId });
+        if (resp && resp.ok) {
+          markBtn.classList.toggle('marked', willMark);
+          markBtn.textContent = willMark ? '⚠已标错' : '标错';
+          markBtn.title = willMark ? '已标记 LLM 错判 · 点击取消' : '标记 LLM 错判';
+        } else {
+          console.warn('[hr-mark-wrong] failed:', resp && resp.error);
+        }
+      } catch (err) {
+        console.warn('[hr-mark-wrong] exception:', err);
+      } finally {
+        markBtn.dataset.busy = '';
+        markBtn.style.opacity = '';
+      }
+    });
+    right.appendChild(markBtn);
+  }
 
   // pending 已等待秒数(依赖 1500ms 全量刷新,无需另起 timer)
   // 30s 内灰色提示,≥ 30s 加红色样式让 HR 注意到「慢评估」
@@ -379,7 +413,7 @@ function renderEvaluation(record) {
         btn.disabled = true;
         btn.textContent = '评估中...';
         await chrome.runtime.sendMessage({
-          type: 'RETRY_EVALUATION',
+          type: BossMessageTypes.RETRY_EVALUATION,
           candidateId: record.candidateId
         });
         refresh();
@@ -413,12 +447,375 @@ function renderEvaluation(record) {
   return card;
 }
 
+// ===== v1.1.23 P3：多模板候选人卡片渲染 =====
+// 一个候选人 × N 个模板 = N 个子评估（每个 template 一行）
+// 输入 record 兼容两种 shape:
+//   1) 新格式 (P3 background 输出): { candidateId, candidate, position, evaluations: [{templateId, templateName, decision/verdict, judgedAt, jdContentHash, status, ...}] }
+//   2) 老格式 (P2 单评估,做向前兼容): { candidateId, candidate, evaluation: {...} } → 包成 [evaluation] 渲染
+
+// 把 record 上的 evaluations 数组规范化(同时兼容老格式)
+function extractEvaluations(record) {
+  if (Array.isArray(record.evaluations) && record.evaluations.length > 0) {
+    return record.evaluations.slice();
+  }
+  // 兼容老 schema：record.evaluation 单条
+  const e = record.evaluation;
+  if (e && typeof e === 'object') {
+    // 老 evaluation 没有 templateId / templateName，回退用 jdId / jdTitle / jdSnapshot.name
+    const tid = e.jdId || e.templateId || '';
+    const tname = (e.jdSnapshot && e.jdSnapshot.name) || e.jdTitle || e.templateName || (templatesById[tid] && templatesById[tid].name) || '(默认模板)';
+    return [Object.assign({}, e, {
+      templateId: tid,
+      templateName: tname
+    })];
+  }
+  return [];
+}
+
+// 子评估 verdict 文本(兼容 verdict / decision 字段名)
+function subVerdictText(subEval) {
+  const status = subEval.status || (subEval.decision || subEval.verdict ? 'done' : 'idle');
+  const verdict = subEval.verdict || subEval.decision || '';
+  if (status === 'unrouted') return '未识别岗位';
+  if (status === 'queued') return '待评估';
+  if (status === 'pending') return '评估中';
+  if (status === 'failed') return '评估失败';
+  if (status === 'idle') return '未评估';
+  // done 状态:看 verdict
+  if (verdict === '符合') return '符合';
+  if (verdict === 'pass') return '不符合';
+  if (verdict === 'unknown' || verdict === '信息不足') return '信息不足';
+  return verdict || '?';
+}
+
+function subVerdictClass(subEval) {
+  const status = subEval.status || (subEval.decision || subEval.verdict ? 'done' : 'idle');
+  if (status === 'unrouted') return 'unrouted';
+  if (status === 'queued' || status === 'pending' || status === 'idle') return 'pending';
+  if (status === 'failed') return 'failed';
+  const verdict = subEval.verdict || subEval.decision || '';
+  if (verdict === '符合') return 'match';
+  if (verdict === 'pass') return 'pass';
+  if (verdict === 'unknown' || verdict === '信息不足') return 'unknown';
+  return 'pending';
+}
+
+// v1.1.23 P3：子评估 jdContentHash !== templatesById[templateId].contentHash → [条件已变]
+// 仅当 templatesById 里有该模板 + 两边 hash 均存在 + 不相等时返回 true
+function isStale(subEval) {
+  const tid = subEval.templateId;
+  if (!tid) return false;
+  const t = templatesById[tid];
+  if (!t || !t.contentHash) return false;
+  const evalHash = subEval.jdContentHash || '';
+  if (!evalHash) return false;
+  return t.contentHash !== evalHash;
+}
+
+// 时间格式化:今天 14:32 / 昨天 14:32 / 5-23 14:32
+function fmtSubTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  if (d.toDateString() === now.toDateString()) return hh + ':' + mm;
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  if (d.toDateString() === yesterday.toDateString()) return '昨 ' + hh + ':' + mm;
+  return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hh + ':' + mm;
+}
+
+// 卡片头部"整体决策" CSS class
+function multiCardClass(subEvals) {
+  if (!subEvals.length) return 'pending';
+  let matchCount = 0, passCount = 0, doneCount = 0;
+  let allUnrouted = true;
+  for (let i = 0; i < subEvals.length; i++) {
+    const s = subEvals[i];
+    const cls = subVerdictClass(s);
+    if (cls !== 'unrouted') allUnrouted = false;
+    if (cls === 'match') { matchCount++; doneCount++; }
+    else if (cls === 'pass') { passCount++; doneCount++; }
+    else if (cls === 'unknown') { doneCount++; }
+  }
+  if (allUnrouted) return 'unrouted';
+  if (doneCount === 0) return 'pending';
+  if (doneCount === subEvals.length) {
+    if (matchCount === subEvals.length) return 'all-match';
+    if (passCount === subEvals.length) return 'all-pass';
+    return 'mixed';
+  }
+  return 'pending';
+}
+
+// 展开状态外挂(防 1500ms 全量重渲销毁 DOM display state)
+const expandedMultiCardIds = new Set();
+// v1.1.24:子评估行展开状态(每个 sub-row 的 reason + 条件 breakdown 二级 accordion)
+// key = candidateId + '::' + templateId
+const expandedSubRowIds = new Set();
+function subRowKey(candidateId, templateId) {
+  return String(candidateId) + '::' + String(templateId || '');
+}
+
+function renderMultiEvalCard(record) {
+  const c = record.candidate || {};
+  const basic = c.basic || {};
+  const source = c.source || {};
+  const subEvals = extractEvaluations(record);
+
+  const cls = multiCardClass(subEvals);
+  const initiallyOpen = expandedMultiCardIds.has(record.candidateId);
+
+  const card = document.createElement('div');
+  card.className = 'multi-eval-card ' + cls;
+
+  // ── 头部 ──
+  const header = document.createElement('div');
+  header.className = 'multi-eval-header';
+
+  const summary = document.createElement('div');
+  summary.className = 'multi-eval-summary';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'name';
+  nameEl.textContent = basic.name || '(无名)';
+  nameEl.title = '点击在 BOSS 页面定位';
+  nameEl.style.cursor = 'pointer';
+  nameEl.addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    locateCandidateInPage(record.candidateId, c.encryptUid || '');
+  });
+  summary.appendChild(nameEl);
+
+  const scenarioLabel = source.scenario === 'recommend' ? '推荐页'
+                       : source.scenario === 'latest' ? '最新页'
+                       : source.scenario === 'chat' ? '沟通页'
+                       : source.scenario === 'sayhi-tab' ? '新招呼'
+                       : '';
+  if (scenarioLabel) {
+    const tag = document.createElement('span');
+    tag.className = 'scenario-tag';
+    tag.textContent = scenarioLabel;
+    summary.appendChild(tag);
+  }
+
+  // 汇总 "符合 X / 总 Y"
+  let matchCnt = 0, passCnt = 0, unknownCnt = 0, pendingCnt = 0;
+  subEvals.forEach(function (s) {
+    const k = subVerdictClass(s);
+    if (k === 'match') matchCnt++;
+    else if (k === 'pass') passCnt++;
+    else if (k === 'unknown') unknownCnt++;
+    else pendingCnt++;
+  });
+  const total = subEvals.length;
+  const counts = document.createElement('span');
+  counts.className = 'multi-eval-counts';
+  counts.innerHTML = '<span class="c-match">符合 ' + matchCnt + '</span>' +
+                     ' / ' + total + ' 模板' +
+                     (passCnt > 0 ? ' · <span class="c-pass">' + passCnt + ' 不符</span>' : '') +
+                     (unknownCnt > 0 ? ' · <span class="c-unknown">' + unknownCnt + ' 信息不足</span>' : '') +
+                     (pendingCnt > 0 ? ' · ' + pendingCnt + ' 待评' : '');
+  summary.appendChild(counts);
+  header.appendChild(summary);
+
+  const arrow = document.createElement('span');
+  arrow.className = 'multi-eval-arrow';
+  arrow.textContent = initiallyOpen ? '▼' : '▶';
+  header.appendChild(arrow);
+
+  card.appendChild(header);
+
+  // 路由 header (沿用旧逻辑;把第一个子评估的 routedJdName / jobAligned 透出来,沟通页用)
+  const firstEval = subEvals[0] || {};
+  const routingRecord = {
+    candidate: c,
+    evaluation: firstEval
+  };
+  const routingHeader = makeRoutingHeader(routingRecord);
+  if (routingHeader) {
+    routingHeader.style.marginTop = '4px';
+    card.appendChild(routingHeader);
+  }
+
+  // ── 展开:子评估列表 ──
+  const sublist = document.createElement('div');
+  sublist.className = 'multi-eval-sublist';
+  sublist.style.display = initiallyOpen ? 'block' : 'none';
+
+  if (subEvals.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'multi-eval-sub-row';
+    empty.textContent = '尚无评估结果';
+    sublist.appendChild(empty);
+  } else {
+    subEvals.forEach(function (s) {
+      // v1.1.24:每个 sub-row 升级为 accordion — 点击展开看 LLM 理由 + 条件 breakdown(done)
+      //   / 错误轨迹(failed)。v1.1.23 P3 重构时漏掉这个二级展开,HR 看不到 LLM 给出的具体判断依据。
+      const status = s.status || (s.decision || s.verdict ? 'done' : 'idle');
+      const expandable = (status === 'done') || (status === 'failed');
+
+      const wrap = document.createElement('div');
+      wrap.className = 'multi-eval-sub-wrap';
+
+      const row = document.createElement('div');
+      row.className = 'multi-eval-sub-row';
+      if (expandable) row.classList.add('expandable');
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'sub-template-name';
+      nameSpan.textContent = s.templateName || (templatesById[s.templateId] && templatesById[s.templateId].name) || '(未命名模板)';
+      nameSpan.title = nameSpan.textContent;
+      row.appendChild(nameSpan);
+
+      const verdict = document.createElement('span');
+      verdict.className = 'sub-verdict ' + subVerdictClass(s);
+      verdict.textContent = subVerdictText(s);
+      row.appendChild(verdict);
+
+      const ts = s.judgedAt || s.evaluatedAt || s.startedAt || 0;
+      if (ts) {
+        const tEl = document.createElement('span');
+        tEl.className = 'sub-time';
+        tEl.textContent = fmtSubTime(ts);
+        tEl.title = new Date(ts).toLocaleString();
+        row.appendChild(tEl);
+      }
+
+      // [条件已变] 红字（HR 决策:不做立即重评按钮，只是标记）
+      if (isStale(s)) {
+        const stale = document.createElement('span');
+        stale.className = 'sub-stale';
+        stale.textContent = '[条件已变]';
+        stale.title = '此评估基于旧版模板，模板内容已被修改。下轮评估会按新模板重算。';
+        row.appendChild(stale);
+      }
+
+      // 展开箭头(仅 done / failed 才显示)
+      let subArrow = null;
+      const rowKey = subRowKey(record.candidateId, s.templateId);
+      const subInitiallyOpen = expandable && expandedSubRowIds.has(rowKey);
+      if (expandable) {
+        subArrow = document.createElement('span');
+        subArrow.className = 'sub-arrow';
+        subArrow.textContent = subInitiallyOpen ? '▼' : '▶';
+        row.appendChild(subArrow);
+      }
+
+      wrap.appendChild(row);
+
+      // 二级展开面板
+      if (expandable) {
+        const subExpand = document.createElement('div');
+        subExpand.className = 'multi-eval-sub-expand';
+        subExpand.style.display = subInitiallyOpen ? 'block' : 'none';
+
+        if (status === 'failed') {
+          // failed:错误信息 + perAttempt 轨迹(沿用旧 renderEvaluation 的失败分支风格)
+          const errDiv = document.createElement('div');
+          errDiv.className = 'sub-error';
+          errDiv.textContent = '⚠ ' + (s.error || '评估失败');
+          subExpand.appendChild(errDiv);
+
+          if (Array.isArray(s.perAttempt) && s.perAttempt.length) {
+            const traceWrap = document.createElement('div');
+            traceWrap.className = 'attempt-trace';
+            const summaryLine = document.createElement('div');
+            summaryLine.className = 'attempt-summary';
+            summaryLine.textContent = '尝试 ' + s.perAttempt.length + ' 次,总耗时 ' +
+              (s.latencyMs ? (s.latencyMs / 1000).toFixed(1) + 's' : '?');
+            traceWrap.appendChild(summaryLine);
+            s.perAttempt.forEach(function (a, ai) {
+              const it = document.createElement('details');
+              it.className = 'attempt-item';
+              const sm = document.createElement('summary');
+              const sec = ((a.latencyMs || 0) / 1000).toFixed(1);
+              const httpPart = a.httpStatus ? (' · HTTP ' + a.httpStatus) : '';
+              sm.textContent = '第 ' + (ai + 1) + ' 次 · ' + sec + 's · ' + (a.errorName || 'OK') + httpPart;
+              it.appendChild(sm);
+              if (a.error) {
+                const m = document.createElement('div');
+                m.className = 'attempt-msg';
+                m.textContent = a.error;
+                it.appendChild(m);
+              }
+              if (a.rawLlmText) {
+                const pre = document.createElement('pre');
+                pre.className = 'attempt-body';
+                pre.textContent = 'LLM raw:\n' + a.rawLlmText;
+                it.appendChild(pre);
+              }
+              traceWrap.appendChild(it);
+            });
+            subExpand.appendChild(traceWrap);
+          }
+        } else {
+          // done:LLM reason(一句话总结)+ 条件逐项 breakdown
+          if (s.reason) {
+            const reasonDiv = document.createElement('div');
+            reasonDiv.className = 'sub-reason';
+            reasonDiv.textContent = '📋 ' + s.reason;
+            subExpand.appendChild(reasonDiv);
+          }
+          const snap = s.jdSnapshot || {};
+          const mustConditions = Array.isArray(snap.mustConditions) ? snap.mustConditions : [];
+          const optionalConditions = Array.isArray(snap.optionalConditions) ? snap.optionalConditions : [];
+          const list = buildConditionsList(s, mustConditions, optionalConditions);
+          if (list) subExpand.appendChild(list);
+          if (!s.reason && !list) {
+            const empty = document.createElement('div');
+            empty.className = 'sub-reason empty';
+            empty.textContent = '（评估完成但未保留理由 / 条件快照 — 可能是历史老数据）';
+            subExpand.appendChild(empty);
+          }
+        }
+
+        wrap.appendChild(subExpand);
+
+        // 点击行切换二级展开;stopPropagation 防止冒泡到外层 header
+        row.style.cursor = 'pointer';
+        row.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          const isOpen = subExpand.style.display !== 'none';
+          subExpand.style.display = isOpen ? 'none' : 'block';
+          if (subArrow) subArrow.textContent = isOpen ? '▶' : '▼';
+          if (isOpen) expandedSubRowIds.delete(rowKey);
+          else expandedSubRowIds.add(rowKey);
+        });
+      }
+
+      sublist.appendChild(wrap);
+    });
+  }
+
+  card.appendChild(sublist);
+
+  header.addEventListener('click', function () {
+    const isOpen = sublist.style.display !== 'none';
+    sublist.style.display = isOpen ? 'none' : 'block';
+    arrow.textContent = isOpen ? '▶' : '▼';
+    if (isOpen) expandedMultiCardIds.delete(record.candidateId);
+    else expandedMultiCardIds.add(record.candidateId);
+  });
+
+  return card;
+}
+
 // ===== 排序 =====
 // 维持 v0.3 的"批次时间正序 + 批次内 indexInBatch 正序"，让侧栏与 BOSS 视觉顺序一致
 function batchKey(record) {
   const src = (record.candidate && record.candidate.source) || {};
+  // v1.1.23 P3：兼容多模板 record.evaluations[]（取最早 judgedAt 作为代表）
   const e = record.evaluation || {};
-  return src.batchAt || e.judgedAt || e.startedAt || 0;
+  const subEvals = Array.isArray(record.evaluations) ? record.evaluations : [];
+  let fallbackTs = e.judgedAt || e.startedAt || 0;
+  if (!fallbackTs && subEvals.length > 0) {
+    for (let i = 0; i < subEvals.length; i++) {
+      const ts = subEvals[i].judgedAt || subEvals[i].evaluatedAt || subEvals[i].startedAt || 0;
+      if (ts && (!fallbackTs || ts > fallbackTs)) fallbackTs = ts;
+    }
+  }
+  return src.batchAt || fallbackTs || 0;
 }
 function indexKey(record) {
   const src = (record.candidate && record.candidate.source) || {};
@@ -438,12 +835,25 @@ let lastSeenChatBatchAt = 0;
 // ===== 主刷新 =====
 async function refreshEvaluations() {
   try {
-    const res = await chrome.runtime.sendMessage({ type: 'GET_EVALUATIONS' });
+    const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.GET_EVALUATIONS });
     if (!res) return;
 
-    if (res.jdTitle) {
-      const modelHint = res.modelId ? ' · ' + res.modelId : '';
-      $('jd-title').textContent = 'JD：' + res.jdTitle + modelHint;
+    // v1.1.23 P3：jd-title 改为「岗位：{positionName} · {selectedCount} 模板」综合标
+    //   原 res.jdTitle 是单 JD 名，现在按用户选择的 position + 勾选的 templates 数渲染
+    const titleEl = $('jd-title');
+    if (titleEl) {
+      if (selectedPositionId && self.BossPositions) {
+        try {
+          const pos = await self.BossPositions.getPosition(selectedPositionId);
+          const modelHint = res.modelId ? ' · ' + res.modelId : '';
+          const tCount = selectedTemplateIds.size;
+          titleEl.textContent = '岗位：' + ((pos && pos.name) || '?') + ' · ' + tCount + ' 模板' + modelHint;
+        } catch (e) {
+          titleEl.textContent = '岗位：— 未选 —';
+        }
+      } else {
+        titleEl.textContent = '岗位：— 未选 —';
+      }
     }
 
     // LLM 配置横幅
@@ -481,11 +891,12 @@ async function refreshEvaluations() {
     if (records.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'empty';
-      empty.textContent = '尚未评估到候选人 — 选 JD + 点「开始本轮」后会自动评估';
+      empty.textContent = '尚未评估到候选人 — 选岗位 + 勾模板 + 点「开始本轮」后会自动评估';
       list.appendChild(empty);
     } else {
+      // v1.1.23 P3：多模板渲染 — 一个候选人 × N 模板 = N 子评估,主卡折叠
       records.forEach(function (r) {
-        list.appendChild(renderEvaluation(r));
+        list.appendChild(renderMultiEvalCard(r));
       });
     }
 
@@ -509,7 +920,7 @@ async function refreshEvaluations() {
 
 async function refreshSayHiBar() {
   try {
-    const res = await chrome.runtime.sendMessage({ type: 'GET_SAYHI_STATUS' });
+    const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.GET_SAYHI_STATUS });
     if (!res) return;
     const bar = $('sayhi-bar');
     const cfgEnabled = res.sayHiConfig && res.sayHiConfig.enabled;
@@ -546,8 +957,8 @@ async function refreshSayHiBar() {
 async function refreshControlBar() {
   try {
     const [cfg, loopRes] = await Promise.all([
-      chrome.runtime.sendMessage({ type: 'GET_CONFIG' }),
-      chrome.runtime.sendMessage({ type: 'GET_LOOP_STATE' })
+      chrome.runtime.sendMessage({ type: BossMessageTypes.GET_CONFIG }),
+      chrome.runtime.sendMessage({ type: BossMessageTypes.GET_LOOP_STATE })
     ]);
     if (!cfg) return;
     const sayHiEnabled = !!(cfg.config && cfg.config.sayHi && cfg.config.sayHi.enabled);
@@ -648,10 +1059,13 @@ async function refresh() {
 
 // 推荐列表自动化：仅控制本轮自动刷新/翻页/循环；开始本轮会确保基础筛选开启。
 $('btn-start').addEventListener('click', async function () {
-  // 前置校验：必须先选 JD（参考竞品 sidepanel.js:659-688）
-  const jdSelect = $('jd-current');
-  if (!jdSelect.value) {
-    alert('请先在上方选择当前 JD');
+  // v1.1.23 P3：必须先选 BOSS 岗位 + 至少 1 个模板
+  if (!selectedPositionId) {
+    alert('请先在上方选择 BOSS 岗位');
+    return;
+  }
+  if (selectedTemplateIds.size === 0) {
+    alert('请至少勾选 1 个模板（chip 列表里）');
     return;
   }
   // 读 招呼数 / 浏览人数（v0.12.8）
@@ -670,11 +1084,14 @@ $('btn-start').addEventListener('click', async function () {
   const targetTab = $('loop-target-tab').value === 'latest' ? 'latest' : 'recommend';
 
   // 设了目标 → 启动 LOOP（START_LOOP 内部会确保基础筛选开启并触发 reload）
+  // v1.1.23 P3：透传 positionId + templateIds 多选给 background
   const r = await chrome.runtime.sendMessage({
-    type: 'START_LOOP',
+    type: BossMessageTypes.START_LOOP,
     goalN: goalN,
     goalK: goalK,
-    tab: targetTab
+    tab: targetTab,
+    positionId: selectedPositionId,
+    templateIds: Array.from(selectedTemplateIds)
   });
   if (!r || !r.ok) {
     alert('启动失败：' + (r && r.error || '未知错误'));
@@ -694,7 +1111,7 @@ function showRefreshHint() {
 
   setTimeout(async function () {
     try {
-      const r = await chrome.runtime.sendMessage({ type: 'CHECK_RECENT_EVENTS' });
+      const r = await chrome.runtime.sendMessage({ type: BossMessageTypes.CHECK_RECENT_EVENTS });
       if (r && r.recentCount > 0) {
         // 已抓到首批 → 5 秒后自动隐藏提示
         hintDiv.textContent = '✓ 候选人已加载，正在评估';
@@ -712,12 +1129,12 @@ function showRefreshHint() {
 }
 
 $('btn-stop').addEventListener('click', async function () {
-  await chrome.runtime.sendMessage({ type: 'STOP_LOOP' });
+  await chrome.runtime.sendMessage({ type: BossMessageTypes.STOP_LOOP });
   refresh();
 });
 
 $('btn-resume').addEventListener('click', async function () {
-  const r = await chrome.runtime.sendMessage({ type: 'RESUME_LOOP' });
+  const r = await chrome.runtime.sendMessage({ type: BossMessageTypes.RESUME_LOOP });
   if (!r || !r.ok) {
     alert('继续失败：' + (r && r.error || '未知错误'));
     return;
@@ -743,36 +1160,33 @@ $('sayhi-toggle').addEventListener('change', async function (ev) {
     }
   }
   await chrome.runtime.sendMessage({
-    type: 'SET_CONFIG_SECTION',
+    type: BossMessageTypes.SET_CONFIG_SECTION,
     section: 'sayHi',
     patch: { enabled: want }
   });
   refresh();
 });
 
-// JD 下拉切换（S3.5）：仅持久化到 BossJD，不通知 background（runtime 接入待 S5）
-$('jd-current').addEventListener('change', async function (ev) {
-  const newId = ev.target.value || '';
-  if (self.BossJD) {
-    await self.BossJD.setCurrentJdId(newId);
-  }
-  // v0.12.4: 切 JD 后旧评估卡按各自 jdSnapshot 渲染，HR 容易看到「显示 JD 跟下拉对不上」
-  // 弹确认让 HR 主动选清不清
-  const evalRes = await chrome.runtime.sendMessage({ type: 'GET_EVALUATIONS' });
-  const hasOldRecords = evalRes && Array.isArray(evalRes.records) && evalRes.records.length > 0;
-  if (hasOldRecords) {
-    const ok = confirm(
-      '已切换到新 JD。\n\n' +
-      '当前列表中 ' + evalRes.records.length + ' 个候选人是按旧 JD 评估的，' +
-      '展开卡片会显示旧 JD 的条件文本。\n\n' +
-      '要不要一起清空这些旧评估卡？\n（不会影响看板漏斗 / 招呼历史）'
-    );
-    if (ok) {
-      await chrome.runtime.sendMessage({ type: 'CLEAR_EVALUATIONS' });
-      refresh();
-    }
-  }
+// v1.1.23 P3：BOSS 岗位下拉切换 → 重新加载该岗位下的模板 chips
+$('position-current').addEventListener('change', async function (ev) {
+  selectedPositionId = ev.target.value || '';
+  persistRecommendSelection();
+  updatePositionWarn();
+  // 切岗位 = 切了一整套候选模板,默认全选(forceAll=true)
+  await refreshTemplatesForCurrentPosition({ forceAll: true });
 });
+
+// v1.1.23 P3：[全选] chip 快捷。v1.1.24 删除「全不选」——空集等价于"该候选人不评估"，无业务意义
+const chipAllBtn = $('chip-shortcut-all');
+if (chipAllBtn) {
+  chipAllBtn.addEventListener('click', async function () {
+    if (!selectedPositionId) return;
+    const templates = await self.BossPositions.listTemplatesForPosition(selectedPositionId);
+    selectedTemplateIds = new Set(templates.map(function (t) { return t.jdId; }));
+    persistRecommendSelection();
+    renderTemplateChips(templates);
+  });
+}
 
 // v0.25.0：删「当前话术」下拉 + loadGreetDropdown（话术 v0.25.2 集成 JD 后由 JD 默认话术决定）
 //   过渡期沿用 appConfig.currentGreetTemplateId（admin 仍有话术管理；HR 此前选过的话术继续生效）
@@ -784,7 +1198,7 @@ if (btnClearEvalInline) {
   btnClearEvalInline.addEventListener('click', async function () {
     if (!confirm('确定清空推荐页候选人列表吗？\n（已写入看板的判定结果统计不受影响）')) return;
     try {
-      const res = await chrome.runtime.sendMessage({ type: 'CLEAR_EVALUATIONS' });
+      const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.CLEAR_EVALUATIONS });
       if (res && res.ok) {
         showToast('✅ 列表已清空');
       } else {
@@ -801,7 +1215,7 @@ if (btnClearEvalInline) {
 //   单评始终手动，不需要徽章（HR 始终自己点 🎯 决定）
 async function refreshAutoActionBadge() {
   try {
-    const r = await chrome.runtime.sendMessage({ type: 'GET_CONFIG' });
+    const r = await chrome.runtime.sendMessage({ type: BossMessageTypes.GET_CONFIG });
     const on = r && r.config && r.config.autoAction && r.config.autoAction.enabledBatchEval;
     const badge = $('auto-action-badge');
     if (badge) badge.style.display = on ? '' : 'none';
@@ -810,37 +1224,163 @@ async function refreshAutoActionBadge() {
   }
 }
 
-// 启动时填充 JD 下拉（参考竞品 sidepanel.js:659-688）
-async function loadJDDropdown() {
-  if (!self.BossJD) {
-    console.warn('[panel] BossJD 模块未加载');
+// ===== v1.1.23 P3：BOSS 岗位 + 模板 chips 多选 =====
+// 选择状态(module-level,跨刷新保留):
+//   selectedPositionId: 当前选中的 BOSS 岗位
+//   selectedTemplateIds: Set<jdId> 当前选中(打钩)的模板
+// chrome.storage.local 持久化 key:
+//   sidepanel.recommendPositionId / sidepanel.recommendTemplateIds
+const RECOMMEND_POSITION_KEY = 'sidepanel.recommendPositionId';
+const RECOMMEND_TEMPLATE_IDS_KEY = 'sidepanel.recommendTemplateIds';
+let selectedPositionId = '';
+let selectedTemplateIds = new Set();
+// templatesById 缓存(供候选人卡渲染时 [条件已变] 比对当前 contentHash 用)
+let templatesById = {};
+
+function persistRecommendSelection() {
+  try {
+    chrome.storage.local.set({
+      [RECOMMEND_POSITION_KEY]: selectedPositionId,
+      [RECOMMEND_TEMPLATE_IDS_KEY]: Array.from(selectedTemplateIds)
+    });
+  } catch (e) { /* swallow */ }
+}
+
+async function restoreRecommendSelection() {
+  return new Promise(function (resolve) {
+    try {
+      chrome.storage.local.get([RECOMMEND_POSITION_KEY, RECOMMEND_TEMPLATE_IDS_KEY], function (r) {
+        if (r && typeof r[RECOMMEND_POSITION_KEY] === 'string') selectedPositionId = r[RECOMMEND_POSITION_KEY];
+        if (r && Array.isArray(r[RECOMMEND_TEMPLATE_IDS_KEY])) selectedTemplateIds = new Set(r[RECOMMEND_TEMPLATE_IDS_KEY]);
+        resolve();
+      });
+    } catch (e) { resolve(); }
+  });
+}
+
+function renderTemplateChips(templates) {
+  const wrap = $('template-chips');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!templates || templates.length === 0) {
+    const empty = document.createElement('span');
+    empty.className = 'template-chips-empty';
+    empty.textContent = '该岗位下尚无模板（去 ⚙️ 设置新建）';
+    wrap.appendChild(empty);
     return;
   }
+  templates.forEach(function (t) {
+    const chip = document.createElement('label');
+    chip.className = 'template-chip';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = t.jdId;
+    cb.checked = selectedTemplateIds.has(t.jdId);
+    if (cb.checked) chip.classList.add('checked');
+    cb.addEventListener('change', function () {
+      if (cb.checked) {
+        selectedTemplateIds.add(t.jdId);
+        chip.classList.add('checked');
+      } else {
+        selectedTemplateIds.delete(t.jdId);
+        chip.classList.remove('checked');
+      }
+      persistRecommendSelection();
+    });
+    chip.appendChild(cb);
+    const txt = document.createElement('span');
+    txt.textContent = t.name || '(未命名)';
+    chip.appendChild(txt);
+    wrap.appendChild(chip);
+  });
+}
+
+async function refreshTemplatesForCurrentPosition(opts) {
+  opts = opts || {};
+  if (!self.BossPositions || !selectedPositionId) {
+    renderTemplateChips([]);
+    return;
+  }
+  const templates = await self.BossPositions.listTemplatesForPosition(selectedPositionId);
+  // 更新 templatesById 缓存(候选人卡 [条件已变] 比对用)
+  templates.forEach(function (t) { templatesById[t.jdId] = t; });
+  // 默认全选:第一次进入此岗位 / 之前选的 templateIds 集合跟当前模板列表完全无交集 → 重置为全选
+  const currentIds = new Set(templates.map(function (t) { return t.jdId; }));
+  const hasOverlap = Array.from(selectedTemplateIds).some(function (id) { return currentIds.has(id); });
+  if (opts.forceAll || !hasOverlap) {
+    selectedTemplateIds = new Set(templates.map(function (t) { return t.jdId; }));
+    persistRecommendSelection();
+  } else {
+    // 清掉不属于当前 position 的残留 id(切岗位场景)
+    const cleaned = new Set();
+    selectedTemplateIds.forEach(function (id) { if (currentIds.has(id)) cleaned.add(id); });
+    if (cleaned.size !== selectedTemplateIds.size) {
+      selectedTemplateIds = cleaned;
+      persistRecommendSelection();
+    }
+  }
+  renderTemplateChips(templates);
+  // 兼容老 background:把第一个选中的模板写到 BossJD.currentJdId,让历史 START_LOOP 路径仍能 fallback
+  if (self.BossJD && selectedTemplateIds.size > 0) {
+    const firstId = Array.from(selectedTemplateIds)[0];
+    self.BossJD.setCurrentJdId(firstId).catch(function () {});
+  }
+}
+
+function updatePositionWarn() {
+  const warn = $('position-warn');
+  if (!warn) return;
+  warn.style.display = selectedPositionId ? 'none' : 'block';
+}
+
+// 启动时填充 BOSS 岗位下拉 + 当前岗位下的模板 chips
+async function loadPositionAndTemplates() {
+  if (!self.BossJD || !self.BossPositions) {
+    console.warn('[panel] BossJD / BossPositions 模块未加载');
+    return;
+  }
+  // ensureSeeded 包揽 JD 模板 + position 自动建表 + 老数据迁移
   await self.BossJD.ensureSeeded();
-  const list = await self.BossJD.listTemplates();
-  const cur = await self.BossJD.getCurrentJdId();
-  const sel = $('jd-current');
+  await self.BossPositions.ensureSeeded();
+  await restoreRecommendSelection();
+
+  const positions = await self.BossPositions.listPositions();
+  const sel = $('position-current');
   sel.innerHTML = '';
-  if (list.length === 0) {
+  if (positions.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
-    opt.textContent = '— 无可选 JD（请去 admin 新建）—';
+    opt.textContent = '— 无可选岗位（去 ⚙️ 设置新建）—';
     sel.appendChild(opt);
+    selectedPositionId = '';
+    updatePositionWarn();
+    renderTemplateChips([]);
     return;
   }
-  if (!cur || !list.some(function (t) { return t.jdId === cur; })) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = '— 未选中 —';
-    sel.appendChild(opt);
+  // 默认选第一个岗位（持久化选择优先）
+  const validPersisted = positions.find(function (p) { return p.positionId === selectedPositionId; });
+  if (!validPersisted) {
+    selectedPositionId = positions[0].positionId;
+    persistRecommendSelection();
   }
-  list.forEach(function (t) {
+  positions.forEach(function (p) {
     const opt = document.createElement('option');
-    opt.value = t.jdId;
-    opt.textContent = t.name;
-    if (t.jdId === cur) opt.selected = true;
+    opt.value = p.positionId;
+    opt.textContent = p.name || '(未命名)';
+    if (p.positionId === selectedPositionId) opt.selected = true;
     sel.appendChild(opt);
   });
+  updatePositionWarn();
+  await refreshTemplatesForCurrentPosition({ forceAll: !validPersisted });
+}
+
+// 缓存全量 templates(沟通页渲染时 templatesById 也需要)
+async function refreshTemplatesCache() {
+  if (!self.BossJD) return;
+  try {
+    const all = await self.BossJD.listTemplates();
+    all.forEach(function (t) { templatesById[t.jdId] = t; });
+  } catch (e) { /* swallow */ }
 }
 
 // v0.20.6：删除 btn-clear / btn-clear-eval。HR 无业务场景需要主动清；
@@ -873,13 +1413,17 @@ if (btnDashboard) {
 
 // 初始化 + 自动刷新
 // 看板入口已迁移到 admin 顶部（v0.12.3）；sidepanel 不再放看板按钮
-loadJDDropdown();
+// v1.1.23 P3：旧 loadJDDropdown 替换为 loadPositionAndTemplates（二级选择器）
+loadPositionAndTemplates();
+refreshTemplatesCache();  // v1.1.23 P3：缓存全量 templates 供 [条件已变] 判断
 // v0.25.0：删 loadGreetDropdown 调用（#greet-current 元素已删）
 refreshAutoActionBadge();      // v0.17.1.0
 refresh();
 setInterval(refresh, 1500);
 // 每 5s 刷一次 autoAction 徽章（admin 改了 toggle 后 ≤5s 反映过来）
 setInterval(refreshAutoActionBadge, 5000);
+// 每 10s 刷一次 templates 缓存（admin 改了模板内容 → 沟通页 [条件已变] 标即时反应）
+setInterval(refreshTemplatesCache, 10000);
 
 // observability v1: 版本号三连点导出诊断包
 // 600ms 内累计 3 次 click 触发,带宽度刚好避开误触
@@ -901,7 +1445,7 @@ setInterval(refreshAutoActionBadge, 5000);
     const prev = tag.textContent;
     tag.textContent = '生成中…';
     try {
-      const resp = await chrome.runtime.sendMessage({ type: 'EXPORT_DIAG_BUNDLE' });
+      const resp = await chrome.runtime.sendMessage({ type: BossMessageTypes.EXPORT_DIAG_BUNDLE });
       if (!resp || !resp.ok) throw new Error((resp && resp.error) || '未知错误');
       const bundle = resp.bundle;
       const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
@@ -970,7 +1514,7 @@ setInterval(refreshAutoActionBadge, 5000);
 
   async function refreshSayhiPane() {
     try {
-      const res = await chrome.runtime.sendMessage({ type: 'GET_SAYHI_POOL' });
+      const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.GET_SAYHI_POOL });
       if (!res || !res.ok) return;
       renderPool(res);
     } catch (e) {
@@ -1071,9 +1615,29 @@ setInterval(refreshAutoActionBadge, 5000);
       progressEl.classList.add('active');
       stopBtn.style.display = evalStatus.running ? 'inline-block' : 'none';
       const pct = evalStatus.total ? Math.round(evalStatus.done * 100 / evalStatus.total) : 0;
+      // v1.1.17:实时速率 + ETA
+      //   平均 X 秒/人 = (now - startedAt) / done(done > 0 时)
+      //   还需 Y 分钟 = (total - done) × 平均秒 / 60(done > 0 且 running 时)
+      let rateText = '';
+      if (evalStatus.startedAt && evalStatus.done > 0) {
+        const elapsedMs = Date.now() - evalStatus.startedAt;
+        const avgSec = elapsedMs / evalStatus.done / 1000;
+        rateText = ' · 平均 ' + avgSec.toFixed(1) + ' 秒/人';
+        if (evalStatus.running && evalStatus.done < evalStatus.total) {
+          const remainCount = evalStatus.total - evalStatus.done;
+          const etaSec = remainCount * avgSec;
+          if (etaSec < 60) {
+            rateText += ' · 还需 ' + Math.round(etaSec) + ' 秒';
+          } else {
+            const etaMin = Math.floor(etaSec / 60);
+            const etaSecRem = Math.round(etaSec % 60);
+            rateText += ' · 还需 ' + etaMin + ' 分' + (etaSecRem > 0 ? etaSecRem + ' 秒' : '');
+          }
+        }
+      }
       $('sayhi-progress-text').textContent =
         (evalStatus.running ? '评估中 ' : (evalStatus.abortRequested ? '已停止 ' : '已完成 ')) +
-        evalStatus.done + ' / ' + evalStatus.total + '（' + pct + '%）';
+        evalStatus.done + ' / ' + evalStatus.total + '（' + pct + '%）' + rateText;
       $('sayhi-progress-fill').style.width = pct + '%';
     } else {
       progressEl.classList.remove('active');
@@ -1149,11 +1713,7 @@ setInterval(refreshAutoActionBadge, 5000);
     box.innerHTML = html;
   }
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
-    });
-  }
+  // v1.1.22 删除重复的 escapeHtml 嵌套定义,IIFE 闭包内引用外层 module 级 escapeHtml(line 210)
 
   // v0.14.0-pre：一键操作按钮工厂（根据评估 decision 显示求简历 / 标不合适）
   // v0.17.1.1：决策「符合」按钮文案改为「话术+求简历」，走新链路（与⚡单评自动后的链路一致）
@@ -1192,7 +1752,7 @@ setInterval(refreshAutoActionBadge, 5000);
       btn.textContent = '⏳ 执行中…';
       try {
         const res = await chrome.runtime.sendMessage({
-          type: 'EXECUTE_SAYHI_ACTION',
+          type: BossMessageTypes.EXECUTE_SAYHI_ACTION,
           candidateId: record.candidateId
         });
         pushDebugLog({
@@ -1252,7 +1812,7 @@ setInterval(refreshAutoActionBadge, 5000);
       btn.textContent = '⏳ 补字段中…';
       try {
         const res = await chrome.runtime.sendMessage({
-          type: 'EVAL_SAYHI_SINGLE',
+          type: BossMessageTypes.EVAL_SAYHI_SINGLE,
           candidateId: candidateId
         });
         if (res && res.ok) {
@@ -1276,98 +1836,49 @@ setInterval(refreshAutoActionBadge, 5000);
   }
 
   function renderSayhiCard(record, poolItem) {
+    // v1.1.23 P3：沟通页卡片改用 renderMultiEvalCard（与推荐页同款多模板渲染）
+    // 输入 record 兼容老/新 schema(extractEvaluations 内部处理):
+    //   - 新: record.evaluations = [{templateId, templateName, verdict, ...}, ...]
+    //   - 老: record.evaluation = {decision, ...} 单条 → 包成 [evaluation]
+    //   - 占位: record.evaluation.status === 'idle' (扫描入池但未评估)
     const e = record.evaluation || {};
-    const status = e.status || 'idle';
-    if (status === 'idle') {
-      // 未评估占位
-      const card = document.createElement('div');
-      card.className = 'eval-card pending';
-      const row = document.createElement('div');
-      row.className = 'eval-row1';
-      const left = document.createElement('span');
-      left.className = 'name';
-      left.textContent = (poolItem.basic && poolItem.basic.name) || '(无名)';
-      left.style.cursor = 'pointer';
-      left.title = '点击在页面定位';
-      left.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        locateCandidateInPage(poolItem.candidateId, poolItem.encryptUid || '');
+    const subEvals = Array.isArray(record.evaluations) ? record.evaluations : [];
+    const isIdlePlaceholder = (e.status === 'idle' && subEvals.length === 0);
+
+    // 兜底:占位场景下补一个 idle 子条目,让多模板卡渲染正常;同时确保 candidate 字段有值
+    let renderRecord = record;
+    if (isIdlePlaceholder) {
+      renderRecord = Object.assign({}, record, {
+        evaluations: [{ templateId: '', templateName: '(尚未评估)', status: 'idle' }],
+        candidate: record.candidate || poolItem
       });
+    } else if (!record.candidate && poolItem) {
+      renderRecord = Object.assign({}, record, { candidate: poolItem });
+    }
+
+    const card = renderMultiEvalCard(renderRecord);
+
+    // 沟通页特殊:lastAction 徽章贴在 multi-eval-counts 后面
+    const last = poolItem && poolItem.lastAction;
+    if (last) {
+      const ok = last.ok && !last.partial;
+      let actionLabel;
+      if (last.action === 'request-resume') actionLabel = '求简历';
+      else if (last.action === 'mark-unsuitable') actionLabel = '标不合适';
+      else if (last.action === 'greet-then-resume') actionLabel = '🎯 话术+求简历';
+      else actionLabel = last.action || '?';
+
       const tag = document.createElement('span');
-      tag.className = 'scenario-tag';
-      tag.textContent = '新招呼';
-      left.appendChild(tag);
-      row.appendChild(left);
-      // 右侧：决策标签 + 单人评估按钮
-      const rightBlock = document.createElement('span');
-      rightBlock.style.cssText = 'display:flex;align-items:center;gap:4px;';
-      const dec = document.createElement('span');
-      dec.className = 'decision pending';
-      dec.textContent = '未评估';
-      rightBlock.appendChild(dec);
-      // v0.25.1：隐藏占位卡片上的 ⚡ 评估按钮（保留 makeSingleEvalButton 函数供调试时启用）
-      //   rightBlock.appendChild(makeSingleEvalButton(poolItem.candidateId));
-      row.appendChild(rightBlock);
-      card.appendChild(row);
-      // v0.21.0 · 1d：未评估时也显示沟通职位（让 HR 知道路由命中目标）
-      // 构造一个临时 record 包装 poolItem 让 makeRoutingHeader 能找到 jobAligned
-      const rh = makeRoutingHeader({ candidate: poolItem, evaluation: {} });
-      if (rh) card.appendChild(rh);
-      // v0.25.2：隐藏沟通职位下方的招呼文本展示（HR 反馈不需要看）
-      //   保留代码注释，调试时可恢复
-      //   if (poolItem.greeting && poolItem.greeting.content) {
-      //     const meta = document.createElement('div');
-      //     meta.className = 'meta';
-      //     meta.style.cssText = 'color:#666;margin-top:4px;line-height:1.4;';
-      //     meta.textContent = '"' + poolItem.greeting.content.slice(0, 80) + (poolItem.greeting.content.length > 80 ? '…' : '') + '"';
-      //     card.appendChild(meta);
-      //   }
-      return card;
-    }
-    // 已评估：用现有 renderEvaluation 渲染（复用样式 + 展开逻辑）
-    const card = renderEvaluation(record);
-    // v0.21.0 · 1d：把"沟通职位 → 路由 JD"小字头插在 eval-row1 之后（unrouted 也走这条）
-    const routingHeader = makeRoutingHeader(record);
-    if (routingHeader) {
-      const row1 = card.querySelector('.eval-row1');
-      if (row1 && row1.nextSibling) {
-        card.insertBefore(routingHeader, row1.nextSibling);
-      } else if (row1) {
-        card.appendChild(routingHeader);
-      }
-    }
-    // v0.25.1：隐藏卡片上的「🎯 话术+求简历 / 🎯 标不合适」+「⚡ 评估」按钮
-    //   makeActionButton / makeSingleEvalButton 函数保留供调试时恢复
-    //   自动操作流程不受影响（仍由批量评估 + autoGreet/autoMark checkbox 驱动）
-    const decisionBlock = card.querySelector('.decision-block');
-    if (decisionBlock) {
-      // v0.25.1 调试时启用：
-      //   const actBtn = makeActionButton(record, poolItem);
-      //   if (actBtn) decisionBlock.appendChild(actBtn);
-      //   const btn = makeSingleEvalButton(record.candidateId);
-      //   btn.title = '重新评估此人';
-      //   decisionBlock.appendChild(btn);
-      // v0.14.0-pre：如有 lastAction，显示一个小标记
-      // v0.17.1.0：新增 greet-then-resume action（评估「符合」自动求简历）的徽章变体
-      const last = poolItem && poolItem.lastAction;
-      if (last) {
-        const tag = document.createElement('span');
-        const ok = last.ok && !last.partial;
-        let actionLabel;
-        if (last.action === 'request-resume') actionLabel = '求简历';
-        else if (last.action === 'mark-unsuitable') actionLabel = '标不合适';
-        else if (last.action === 'greet-then-resume') actionLabel = '🎯 话术+求简历';
-        else actionLabel = last.action || '?';
-        tag.textContent = last.action === 'greet-then-resume' && ok
-          ? '🎯 话术+求简历 ✓'
-          : (ok ? '已执行 ✓' : (last.partial ? '部分成功 ⚠' : '执行失败 ✗'));
-        tag.title = actionLabel + ' · ' + new Date(last.attemptedAt || 0).toLocaleString() +
-                    (last.error ? ' · 错误：' + last.error : '');
-        tag.style.cssText = 'margin-left:4px;font-size:10px;padding:1px 6px;border-radius:3px;background:' +
-                            (ok ? '#e6f7ec' : (last.partial ? '#fff7e6' : '#fce6e6')) + ';color:' +
-                            (ok ? '#0a8' : (last.partial ? '#e90' : '#c33')) + ';';
-        decisionBlock.appendChild(tag);
-      }
+      tag.textContent = last.action === 'greet-then-resume' && ok
+        ? '🎯 话术+求简历 ✓'
+        : (ok ? '已执行 ✓' : (last.partial ? '部分成功 ⚠' : '执行失败 ✗'));
+      tag.title = actionLabel + ' · ' + new Date(last.attemptedAt || 0).toLocaleString() +
+                  (last.error ? ' · 错误：' + last.error : '');
+      tag.style.cssText = 'margin-left:6px;font-size:10px;padding:1px 6px;border-radius:3px;background:' +
+                          (ok ? '#e6f7ec' : (last.partial ? '#fff7e6' : '#fce6e6')) + ';color:' +
+                          (ok ? '#0a8' : (last.partial ? '#e90' : '#c33')) + ';';
+      const counts = card.querySelector('.multi-eval-counts');
+      if (counts) counts.appendChild(tag);
     }
     return card;
   }
@@ -1384,7 +1895,14 @@ setInterval(refreshAutoActionBadge, 5000);
     btn.textContent = '🔍 扫描中（约 5-10 秒）…';
     try {
       // Phase 1：扫描本页候选人入池
-      const scanRes = await chrome.runtime.sendMessage({ type: 'SCAN_SAYHI_TAB' });
+      const scanRes = await chrome.runtime.sendMessage({ type: BossMessageTypes.SCAN_SAYHI_TAB });
+      // v1.1.25:错 tab 拦截 — 用户在非「新招呼」一级 tab 下点了开始,inject.js 校验失败
+      //   旧版没拦,会把「全部 / 沟通中」等 tab 下的候选人当新招呼跑评估,结果错乱
+      if (scanRes && scanRes.error === 'wrong_tab') {
+        const activeTab = scanRes.activeTab || '(未识别)';
+        showToast('当前在「' + activeTab + '」tab，筛选只能在「新招呼」tab 下进行。请切到「新招呼」tab 后重试', 'error');
+        return;
+      }
       if (!scanRes || !scanRes.ok) {
         showToast('扫描失败：' + ((scanRes && scanRes.error) || '未知错误'), 'error');
         return;
@@ -1398,7 +1916,7 @@ setInterval(refreshAutoActionBadge, 5000);
 
       // Phase 2：触发批量评估（背景串行循环，含 1c 路由层）
       btn.textContent = '⚡ 启动评估…';
-      const evalRes = await chrome.runtime.sendMessage({ type: 'EVAL_SAYHI_BATCH' });
+      const evalRes = await chrome.runtime.sendMessage({ type: BossMessageTypes.EVAL_SAYHI_BATCH });
       if (!evalRes || !evalRes.ok) {
         showToast('评估启动失败：' + ((evalRes && evalRes.error) || '未知错误'), 'error');
         return;
@@ -1422,7 +1940,7 @@ setInterval(refreshAutoActionBadge, 5000);
     const checked = !!ev.target.checked;
     try {
       const res = await chrome.runtime.sendMessage({
-        type: 'SET_CONFIG_SECTION',
+        type: BossMessageTypes.SET_CONFIG_SECTION,
         section: 'autoAction',
         patch: { enabledBatchEval: checked }
       });
@@ -1443,7 +1961,7 @@ setInterval(refreshAutoActionBadge, 5000);
     const checked = !!ev.target.checked;
     try {
       const res = await chrome.runtime.sendMessage({
-        type: 'SET_CONFIG_SECTION',
+        type: BossMessageTypes.SET_CONFIG_SECTION,
         section: 'autoAction',
         patch: { autoMarkUnsuitable: checked }
       });
@@ -1475,7 +1993,7 @@ setInterval(refreshAutoActionBadge, 5000);
     const v = parseThresholdValue(ev.target.value);
     try {
       const res = await chrome.runtime.sendMessage({
-        type: 'SET_CONFIG_SECTION',
+        type: BossMessageTypes.SET_CONFIG_SECTION,
         section: 'sayhiBatch',
         patch: { maxBrowseK: v }
       });
@@ -1500,7 +2018,7 @@ setInterval(refreshAutoActionBadge, 5000);
     btnClearInline.addEventListener('click', async function () {
       if (!confirm('确定清空沟通页候选人列表吗？已有的评估结果不会被删。')) return;
       try {
-        const res = await chrome.runtime.sendMessage({ type: 'CLEAR_SAYHI_POOL' });
+        const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.CLEAR_SAYHI_POOL });
         if (res && res.ok) {
           showToast('✅ 列表已清空（清掉 ' + (res.cleared || 0) + ' 人）');
         } else {
@@ -1516,7 +2034,7 @@ setInterval(refreshAutoActionBadge, 5000);
   // v0.22.1 · Phase 2·2b：新统一停止按钮（与 #btn-sayhi-stop 行为一致）
   $('btn-sayhi-stop-batch').addEventListener('click', async function () {
     try {
-      const res = await chrome.runtime.sendMessage({ type: 'STOP_SAYHI_EVAL' });
+      const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.STOP_SAYHI_EVAL });
       if (res && res.ok) {
         showToast('已请求停止（未发起的 LLM 调用会跳过，已发起的让它完成）');
       } else {
@@ -1534,7 +2052,7 @@ setInterval(refreshAutoActionBadge, 5000);
     // v0.13.1：滚动扫虚拟列表需要 3-10 秒，文案给 HR 明确预期
     btn.textContent = '🔍 滚动扫描中（约 5-10 秒）…';
     try {
-      const res = await chrome.runtime.sendMessage({ type: 'SCAN_SAYHI_TAB' });
+      const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.SCAN_SAYHI_TAB });
       if (res && res.ok) {
         if (res.scanned > 0) {
           showToast('✅ 扫到 ' + res.scanned + ' 人，入池 ' + res.upserted + ' 人');
@@ -1559,7 +2077,7 @@ setInterval(refreshAutoActionBadge, 5000);
 
   $('btn-sayhi-eval').addEventListener('click', async function () {
     try {
-      const res = await chrome.runtime.sendMessage({ type: 'EVAL_SAYHI_BATCH' });
+      const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.EVAL_SAYHI_BATCH });
       if (res && res.ok) {
         if (res.total === 0) {
           showToast(res.message || '无需重评');
@@ -1577,7 +2095,7 @@ setInterval(refreshAutoActionBadge, 5000);
 
   $('btn-sayhi-stop').addEventListener('click', async function () {
     try {
-      const res = await chrome.runtime.sendMessage({ type: 'STOP_SAYHI_EVAL' });
+      const res = await chrome.runtime.sendMessage({ type: BossMessageTypes.STOP_SAYHI_EVAL });
       if (res && res.ok) {
         showToast('已请求停止（未发起的 LLM 调用会跳过，已发起的让它完成）');
       } else {
@@ -1592,7 +2110,7 @@ setInterval(refreshAutoActionBadge, 5000);
   $('btn-sayhi-clear-pool').addEventListener('click', async function () {
     if (!confirm('确定清空沟通页候选人池吗？已有的评估结果不会被删。')) return;
     try {
-      await chrome.runtime.sendMessage({ type: 'CLEAR_SAYHI_POOL' });
+      await chrome.runtime.sendMessage({ type: BossMessageTypes.CLEAR_SAYHI_POOL });
       showToast('池子已清空');
     } catch (e) {
       showToast('清空失败：' + e.message, 'error');

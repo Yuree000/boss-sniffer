@@ -130,6 +130,36 @@
       user-select: none;
     }
 
+    /* v1.1.7: HR 反馈通道 — 标 LLM 错判按钮 (v1.1.16 文案统一) */
+    .hr-mark-wrong-btn {
+      display: inline-block;
+      padding: 1px 6px;
+      margin-left: 4px;
+      font-size: 10px;
+      line-height: 1.5;
+      border: 1px solid #d0d7de;
+      border-radius: 3px;
+      background: #fff;
+      color: #666;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .hr-mark-wrong-btn:hover {
+      border-color: #c33;
+      color: #c33;
+    }
+    .hr-mark-wrong-btn.marked {
+      background: #fee2e2;
+      color: #c33;
+      border-color: #c33;
+      font-weight: 600;
+    }
+    .hr-mark-wrong-btn.marked:hover {
+      background: #fecaca;
+    }
+
     /* pass / failed 展开区 */
     .pass-expand {
       margin-top: 6px;
@@ -764,6 +794,239 @@
 
     /* v0.24.4：删 v0.23.0 待标不合适 30s 撤销队列 CSS（设计回退） */
 
+    /* === v1.1.23 P3 多模板:岗位选择 + 模板 chips 选择器(推荐页) === */
+    .position-warn {
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      background: #fff7e6;
+      border: 1px solid #f5a623;
+      color: #7a4f0f;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .template-chips-row {
+      margin-top: 6px;
+    }
+    .template-chips-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      font-size: 11px;
+      color: #666;
+    }
+    .template-chips-header label {
+      font-weight: 600;
+      color: #555;
+    }
+    .chip-shortcut {
+      font-size: 10px;
+      padding: 2px 6px;
+      cursor: pointer;
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 3px;
+      color: #555;
+      margin-left: 4px;
+    }
+    .chip-shortcut:hover {
+      border-color: #2467f0;
+      color: #2467f0;
+    }
+    .template-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid #e1e4e8;
+      border-radius: 6px;
+      background: #fafbfc;
+      min-height: 28px;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+    .template-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px 8px;
+      font-size: 11px;
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .template-chip:hover {
+      border-color: #2467f0;
+    }
+    .template-chip.checked {
+      background: #e6f0ff;
+      border-color: #2467f0;
+      color: #2467f0;
+      font-weight: 500;
+    }
+    .template-chip input {
+      margin: 0;
+      cursor: pointer;
+    }
+    .template-chips-empty {
+      color: #999;
+      font-size: 11px;
+      padding: 4px 6px;
+    }
+
+    /* === v1.1.23 P3 多模板:候选人卡片(每候选人 N 子评估) === */
+    .multi-eval-card {
+      padding: 6px 8px;
+      margin-bottom: 5px;
+      border: 1px solid #e5e5e5;
+      border-radius: 6px;
+      border-left: 4px solid #d0d7de;
+      background: #fff;
+    }
+    /* 主行颜色按 "总体决断" 染色:全部符合 = 绿;全部 pass = 红;混合 / 部分未出 = 灰 */
+    .multi-eval-card.all-match { border-left-color: #2a8; background: #f3fbf6; }
+    .multi-eval-card.all-pass { border-left-color: #c33; background: #fdf5f5; }
+    .multi-eval-card.mixed { border-left-color: #f5a623; background: #fffbe6; }
+    .multi-eval-card.pending { border-left-color: #aaa; background: #fafafa; }
+    .multi-eval-card.unrouted { border-left-color: #e6b800; background: #fffbe6; }
+
+    .multi-eval-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .multi-eval-summary {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
+    }
+    .multi-eval-summary .name {
+      font-weight: 600;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .multi-eval-counts {
+      font-size: 11px;
+      color: #555;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .multi-eval-counts .c-match { color: #2a8; font-weight: 600; }
+    .multi-eval-counts .c-pass { color: #c33; }
+    .multi-eval-counts .c-unknown { color: #b08000; }
+    .multi-eval-arrow {
+      color: #888;
+      font-size: 10px;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .multi-eval-sublist {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px dashed #e5e5e5;
+    }
+    .multi-eval-sub-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 0;
+      font-size: 11px;
+      line-height: 1.4;
+      border-bottom: 1px dotted #f0f0f0;
+    }
+    .multi-eval-sub-row:last-child { border-bottom: none; }
+    .multi-eval-sub-row .sub-template-name {
+      flex: 1;
+      min-width: 0;
+      color: #444;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .multi-eval-sub-row .sub-verdict {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-weight: 600;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .multi-eval-sub-row .sub-verdict.match { color: #fff; background: #2a8; }
+    .multi-eval-sub-row .sub-verdict.pass { color: #fff; background: #c33; }
+    .multi-eval-sub-row .sub-verdict.unknown { color: #fff; background: #f5a623; }
+    .multi-eval-sub-row .sub-verdict.pending { color: #888; background: #eee; }
+    .multi-eval-sub-row .sub-verdict.failed { color: #fff; background: #d9534f; }
+    .multi-eval-sub-row .sub-verdict.unrouted { color: #7a4f0f; background: #fff7e6; }
+    .multi-eval-sub-row .sub-time {
+      font-size: 10px;
+      color: #999;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .multi-eval-sub-row .sub-stale {
+      font-size: 10px;
+      color: #c33;
+      font-weight: 600;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    /* v1.1.24:sub-row 二级 accordion(LLM 理由 + 条件 breakdown) */
+    .multi-eval-sub-wrap {
+      border-bottom: 1px dotted #f0f0f0;
+    }
+    .multi-eval-sub-wrap:last-child { border-bottom: none; }
+    .multi-eval-sub-wrap .multi-eval-sub-row { border-bottom: none; }
+    .multi-eval-sub-row.expandable:hover { background: #fafafa; }
+    .multi-eval-sub-row .sub-arrow {
+      font-size: 10px;
+      color: #888;
+      flex-shrink: 0;
+      margin-left: 2px;
+    }
+    .multi-eval-sub-expand {
+      padding: 6px 8px 8px 12px;
+      background: #fbfbfb;
+      border-left: 2px solid #e0e0e0;
+      margin: 2px 0 4px 4px;
+    }
+    .multi-eval-sub-expand .sub-reason {
+      font-size: 11px;
+      color: #333;
+      line-height: 1.5;
+      margin-bottom: 6px;
+      padding: 4px 6px;
+      background: #fff;
+      border-radius: 3px;
+      border: 1px solid #eee;
+    }
+    .multi-eval-sub-expand .sub-reason.empty {
+      color: #999;
+      font-style: italic;
+      background: transparent;
+      border: none;
+      padding: 2px 0;
+    }
+    .multi-eval-sub-expand .sub-error {
+      font-size: 11px;
+      color: #c33;
+      line-height: 1.5;
+      margin-bottom: 6px;
+    }
+    .multi-eval-sub-expand .conditions-list {
+      margin-top: 0;
+    }
+
   </style>
 </head>
 <body>
@@ -789,14 +1052,32 @@
   <!-- ===== 推荐页 pane（现有功能，保持不变） ===== -->
   <div class="page-pane" data-page-pane="recommend">
 
-  <!-- 顶部控制栏（S3.5） -->
+  <!-- 顶部控制栏（S3.5；v1.1.23 P3 改造：BOSS 岗位 + 模板 chips 二级多选） -->
   <div class="control-bar">
+    <!-- v1.1.23 P3 ：position 未选时的提示条 -->
+    <div id="position-warn" class="position-warn" style="display:none;">
+      请先选择 BOSS 岗位（去 ⚙️ 设置创建岗位 / 模板，本轮评估按所选岗位下的模板执行）
+    </div>
     <div class="control-row">
-      <label for="jd-current">当前 JD</label>
-      <select id="jd-current">
+      <label for="position-current">BOSS 岗位</label>
+      <select id="position-current">
         <option value="">— 加载中 —</option>
       </select>
     </div>
+    <!-- v1.1.23 P3：模板多选 chips。默认全勾选；提供 [全选]（v1.1.24 删除「全不选」——空集等价于"该候选人不评估"，无业务意义）-->
+    <div class="template-chips-row">
+      <div class="template-chips-header">
+        <label>使用模板（多选，N 个模板 = N 张评估卡）</label>
+        <span>
+          <span id="chip-shortcut-all" class="chip-shortcut">全选</span>
+        </span>
+      </div>
+      <div id="template-chips" class="template-chips">
+        <span class="template-chips-empty">— 加载中 —</span>
+      </div>
+    </div>
+    <!-- v1.1.23 P3：原 #jd-current 下拉已删，现按 position+chips 选；保留兜底 hidden 元素让旧代码 set BossJD.currentJdId 不崩 -->
+    <select id="jd-current" style="display:none;" aria-hidden="true"></select>
     <div class="control-label-row auto-greet-header">
       <span>自动招呼候选人</span>
       <span class="help-icon" id="auto-greet-help-toggle" title="点击查看说明">?</span>
@@ -872,12 +1153,13 @@
     <div class="section-title">
       <span>候选人评估 <span id="eval-count" style="color:#888;font-weight:400;">(0)</span></span>
       <span style="display:flex;align-items:center;gap:8px;">
-        <span class="jd-title" id="jd-title">JD: 加载中…</span>
+        <!-- v1.1.23 P3：原 JD 单标改为「岗位 / 模板数」综合标 -->
+        <span class="jd-title" id="jd-title">岗位：加载中…</span>
         <button id="btn-clear-evaluations-inline" class="danger" style="font-size:11px;padding:3px 10px;cursor:pointer;" title="清空当前候选人列表（已写入看板的判定结果不受影响）">清空列表</button>
       </span>
     </div>
     <div id="evaluations" class="eval-list">
-      <div class="empty">尚未评估到候选人 — 选 JD + 点「开始本轮」后会自动评估</div>
+      <div class="empty">尚未评估到候选人 — 选岗位 + 勾模板 + 点「开始本轮」后会自动评估</div>
     </div>
   </div>
 
@@ -998,11 +1280,15 @@
   <!-- v0.25.0：footer 已空（看板/设置按钮迁移到顶部 h2 同一行） -->
 
 
+  <script src="../lib/ui-utils.js"></script>
+  <!-- v1.1.22 P1-2:message-types.js 在 sidepanel.js 之前,供 BossMessageTypes 常量引用 -->
+  <script src="../lib/message-types.js"></script>
   <script src="../lib/city-codes.js"></script>
   <!-- v0.17.0 storage 重构：jd-templates 依赖 BossStorageSync，必须先加载 -->
   <!-- v0.17.1.0：greet-templates 并列加载 -->
   <script src="../lib/storage-sync.js"></script>
   <script src="../lib/jd-templates.js"></script>
+  <script src="../lib/boss-positions.js"></script>
   <script src="../lib/greet-templates.js"></script>
   <script src="../lib/events.js"></script>
   <script src="sidepanel.js"></script>

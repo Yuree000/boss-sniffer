@@ -150,26 +150,21 @@
     </div>
 
     <!-- ============ JD 模板管理 ============ -->
+    <!-- v1.1.23 P3-4:平铺表格 → 岗位卡片树形结构(BossPosition 顶层,Template 为叶子)
+         数据流:loadJDList() → BossPositions.listPositionsWithTemplates() 一次拉嵌套
+         拖拽:HTML5 drag-drop;岗位间排序、模板在岗位内排序;不跨岗位
+         复制模板:cloneTemplate(sourceId) 后补一刀 saveTemplate 写 positionId(同岗位) -->
     <section class="card">
       <h2>JD 模板管理</h2>
-      <p class="hint">岗位画像模板（增删改查）。当前选中由侧边栏控制；admin 仅展示，列表中标记 ● 的为侧边栏选中项。</p>
+      <p class="hint">按 BOSS 岗位组织模板:每个岗位下可挂多份筛选模板。沟通页按岗位名匹配候选人后,对该岗位下所有模板逐个评估。</p>
 
-      <div class="jd-list-wrap">
-        <!-- v0.25.0：隐藏 M/N/K 列（HR 反馈列表不需要看这些数字，配置时仍可改） -->
-        <table class="jd-table" id="jd-table">
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th class="actions-col">操作</th>
-            </tr>
-          </thead>
-          <tbody id="jd-list-body"></tbody>
-        </table>
-        <div id="jd-empty" class="jd-empty" style="display:none;">暂无 JD 模板，点击下方"新建"。</div>
+      <div class="position-tree-wrap">
+        <div id="position-tree"></div>
+        <div id="position-empty" class="jd-empty" style="display:none;">暂无 BOSS 岗位,点击下方"新建岗位"。</div>
       </div>
 
       <div class="actions">
-        <button id="btn-jd-new" class="primary">+ 新建 JD 模板</button>
+        <button id="btn-position-new" class="primary">+ 新建岗位</button>
       </div>
 
       <!-- 编辑表单（默认隐藏，新建/编辑时展开） -->
@@ -225,19 +220,10 @@
 
     <!-- v0.25.2：「话术模板管理」section 整段删除 — 话术改为内嵌在 JD 模板内（每 JD 自带话术 + 选默认） -->
 
-    <!-- v0.25.2：「数据导入/导出」+「自动打招呼」+「危险操作」全部包到折叠区（HR 通常无需打开） -->
-    <details class="admin-advanced-fold" style="margin-bottom:16px;">
-      <summary style="cursor:pointer;padding:12px 16px;background:#f5f5f5;border:1px solid #ddd;border-radius:6px;font-size:14px;font-weight:500;color:#555;user-select:none;">
-        🔧 高级 / 调试设置
-      </summary>
-
-    <!-- ============ 数据导入 / 导出 ============ -->
-    <!-- v0.17.0-prod：FSA 备份链路未完工，「从备份目录导入历史数据」按钮在 admin.js 里隐藏 -->
+    <!-- ============ 数据导入 / 导出 (v1.0.14 移出折叠区到顶级) ============ -->
     <section class="card">
       <h2>数据导入 / 导出</h2>
-      <p class="hint" id="hint-fsa-backup" hidden>v0.17.0 起，备份文件按月分片存到你在侧栏设置的本地文件夹。换电脑或卸载重装时用下面的按钮恢复。</p>
       <div class="admin-actions">
-        <button id="btn-import-backup" hidden>从备份目录导入历史数据</button>
         <button id="btn-export-jd">导出 JD 模板 JSON</button>
         <input type="file" id="file-import-jd" accept=".json" style="display:none">
         <button id="btn-import-jd">导入 JD 模板 JSON</button>
@@ -245,129 +231,37 @@
       <div id="import-result" class="import-result"></div>
     </section>
 
-    <!-- ============ 自动打招呼 ============ -->
+    <!-- v1.0.14：「高级 / 调试设置」折叠区 — 仅保留 hover 时序 + 危险操作 -->
+    <details class="admin-advanced-fold" style="margin-bottom:16px;">
+      <summary style="cursor:pointer;padding:12px 16px;background:#f5f5f5;border:1px solid #ddd;border-radius:6px;font-size:14px;font-weight:500;color:#555;user-select:none;">
+        🔧 高级 / 调试设置
+      </summary>
+
+    <!-- ============ v1.0.14：沟通页 autoMark 点击时序 ============ -->
     <section class="card">
-      <h2>自动打招呼</h2>
-      <div class="banner warn" style="background:#fff5e6;border-color:#e88a00;color:#7a4f0f;">
-        <strong>⚠️ chrome.debugger 模式</strong>：启用后会模拟点击 BOSS 页面"打招呼"按钮，
-        浏览器顶部会持续显示<strong>"已开始调试此浏览器"</strong>警告条。这是扩展正常工作的副作用，
-        关闭 sayHi 开关警告条即消失。
-      </div>
-
-      <p class="hint">"启用自动打招呼" 已搬到侧边栏运行时控制；admin 仅配置节流参数。判定标准：v0.12 二态决策后仅「符合」候选人会被入队。</p>
-
-      <div class="form-grid-2">
-        <div class="form-row">
-          <label for="sayhi-delay-min">延迟下限（毫秒）</label>
-          <input id="sayhi-delay-min" type="number" min="0" step="100">
-        </div>
-        <div class="form-row">
-          <label for="sayhi-delay-max">延迟上限（毫秒）</label>
-          <input id="sayhi-delay-max" type="number" min="0" step="100">
-        </div>
-      </div>
-      <span class="field-hint" style="margin-top:-8px; display:block;">每次打招呼之间随机等待 [下限, 上限] 毫秒，模拟人类操作</span>
-
-      <div class="form-grid-2">
-        <div class="form-row">
-          <label for="sayhi-rest-after">连续 N 人后休息</label>
-          <input id="sayhi-rest-after" type="number" min="1" step="1">
-        </div>
-        <div class="form-row">
-          <label for="sayhi-rest-minutes">休息时长（分钟，逗号分两值取随机）</label>
-          <input id="sayhi-rest-minutes" type="text" placeholder="5,10">
-        </div>
-      </div>
-      <span class="field-hint" style="margin-top:-8px; display:block;">打满 N 人后强制休息 [min, max] 分钟，让账号看起来像真人</span>
-
-      <!-- v0.24.2：移除 auto-action-enabled / auto-action-dry-run 两个开关（迁移到 sidepanel 沟通页 control-bar） -->
-      <h3 style="margin-top:20px;">评估后自动求简历 · 冷却参数</h3>
-      <div class="field-hint" style="margin-bottom:8px;">
-        ☑ 自动话术+求简历（评估「符合」时）／ ☑ 自动标不合适（评估「pass」时）两个开关已迁移到 <strong>侧边栏 → 沟通页 → control-bar</strong>，HR 现场决定每批是否启用。<br>
-        dry-run 调试模式已默认关闭、不再暴露 UI 开关。此处只保留冷却参数。
-      </div>
-
-      <div class="form-grid-2">
-        <div class="form-row">
-          <label for="auto-action-cooldown-min">候选人间冷却下限（毫秒）</label>
-          <input id="auto-action-cooldown-min" type="number" min="0" step="100">
-        </div>
-        <div class="form-row">
-          <label for="auto-action-cooldown-max">候选人间冷却上限（毫秒）</label>
-          <input id="auto-action-cooldown-max" type="number" min="0" step="100">
-        </div>
-      </div>
-      <span class="field-hint" style="margin-top:-8px; display:block;">
-        自动求简历专属冷却（默认 2-4s）。链路自身已耗 13-25s/人，叠加大幅冷却会让 HR 觉得卡死。
-      </span>
-
-      <!-- v0.17.0.10 POC A7：沟通页 DOM 扫描风控参数 -->
-      <h3 style="margin-top:20px;">沟通页 DOM 扫描（v0.17.0.10）</h3>
-      <p class="field-hint" style="margin-top:-4px;">
-        评估"新招呼"候选人时，主扩展会模拟点击每个候选人触发 BOSS 渲染右侧详情面板，
-        然后扫 DOM 拿期望城市/个人简介/工作经历长文本喂 LLM。
-        <strong>必须串行 + 拟人冷却</strong>，避免被 BOSS 行为分析识别。
+      <h2>沟通页 autoMark 点击时序</h2>
+      <p class="hint">
+        autoMark 用 chrome.debugger 派发鼠标事件点「不合适」按钮。「鼠标移到按钮上」到「按下」之间会等一小段随机时间(拟人 hover),让 BOSS 把它当真人 click 接受。
+        <strong>低于 30ms 可能被 BOSS 业务拒绝</strong>(v0.24.10 试过 0ms,出现概率性 click miss);
+        <strong>过高(&gt; 200ms)</strong> 视觉上明显卡顿且可能撞 BOSS hover 二级菜单。建议保持默认 30-110ms。
       </p>
       <div class="form-grid-2">
         <div class="form-row">
-          <label for="sayhidom-max-per-run">单批扫描上限（人）</label>
-          <input id="sayhidom-max-per-run" type="number" min="0" step="1">
+          <label for="hover-delay-min">hover 延迟下限(毫秒)</label>
+          <input id="hover-delay-min" type="number" min="0" step="10">
         </div>
         <div class="form-row">
-          <label>
-            <input id="sayhidom-proactive-fetch" type="checkbox" style="margin-right:6px;">
-            启用 v0.13.3 主动 fetch（默认关）
-          </label>
+          <label for="hover-delay-max">hover 延迟上限(毫秒)</label>
+          <input id="hover-delay-max" type="number" min="0" step="10">
         </div>
       </div>
       <span class="field-hint" style="margin-top:-8px; display:block;">
-        <strong>单批上限</strong>：轮 1 测试用 1，跑通后调 5、15；0 = 不限制（不推荐）。<br>
-        <strong>主动 fetch</strong>：默认关。DOM 扫描的模拟点击已经会让 BOSS 自调 chat/geek/info（HR 真实行为），开启会双倍流量增加风控嫌疑。
+        每次 autoMark 真点击时,mouseMoved → mousePressed 之间随机等待 [下限, 上限] 毫秒。默认 30-110ms(对齐 lib/sayHi.js 推荐页打招呼时序,多年稳定)。
       </span>
-
-      <div class="form-grid-2">
-        <div class="form-row">
-          <label for="sayhidom-cooldown-min">冷却下限（毫秒）</label>
-          <input id="sayhidom-cooldown-min" type="number" min="0" step="100">
-        </div>
-        <div class="form-row">
-          <label for="sayhidom-cooldown-max">冷却上限（毫秒）</label>
-          <input id="sayhidom-cooldown-max" type="number" min="0" step="100">
-        </div>
-      </div>
-      <span class="field-hint" style="margin-top:-8px; display:block;">
-        每扫一个候选人后随机等待 [下限, 上限] 毫秒再扫下一个。HR 看简历通常 5-10 秒，默认 5000-8000。
-      </span>
-
-      <!-- PoC 测试工具 -->
-      <details style="margin-top:16px;">
-        <summary style="cursor:pointer; font-size:12px; color:#555;">🔧 调试工具（PoC 测试）</summary>
-        <div style="padding:12px; background:#fafafa; border-radius:4px; margin-top:8px;">
-          <div style="font-size:12px; color:#666; margin-bottom:10px; line-height:1.6;">
-            sayHi 模式依赖 chrome.debugger，先用下面工具确认能正常工作再启用全自动。
-            <br>测试前请先在另一个标签打开 <code>www.zhipin.com</code> 推荐流页面。
-          </div>
-          <div class="actions" style="margin-bottom:10px;">
-            <button id="btn-find-tab" class="secondary">① 找 BOSS tab</button>
-            <button id="btn-test-debugger" class="secondary">② 测试 debugger 连接</button>
-            <span id="poc-status" class="test-result" style="margin-left:0;"></span>
-          </div>
-
-          <div class="form-row">
-            <label for="test-candidate-id">候选人 candidateId（用于步骤 ③ ④）</label>
-            <input id="test-candidate-id" type="text" placeholder="从 sidepanel 评估卡片或 IndexedDB 复制">
-          </div>
-          <div class="actions" style="flex-wrap:wrap;">
-            <button id="btn-test-sayhi" class="secondary">③ 测试对该候选人 sayHi</button>
-            <button id="btn-diagnose-dom" class="secondary">④ 🔬 诊断 BOSS DOM</button>
-          </div>
-          <div style="font-size:11px; color:#888; margin-top:8px;">
-            ④ 当 ③ 报"未找到候选人元素"时用：扫描 BOSS 当前页面，dump 出实际的 attribute 命名给开发者看。
-          </div>
-          <pre id="diag-output" style="display:none; margin-top:10px; padding:8px; background:#1f2328; color:#e6edf3; border-radius:4px; font-size:10px; max-height:400px; overflow:auto; white-space:pre-wrap; word-break:break-all;"></pre>
-        </div>
-      </details>
     </section>
+
+    <!-- v1.0.14：「自动打招呼」整段 section 已删(含其下所有子配置 + PoC 测试 details)
+         运行时仍读 appConfig.sayHi / sayHiDom / autoAction.cooldown;DEFAULTS 兜底,不影响业务。 -->
 
     <!-- ============ v0.20.6 危险操作（开发调试用） ============ -->
     <section class="card">
@@ -390,18 +284,7 @@
         </div>
       </div>
 
-      <!-- v0.22.5 · Phase 3·3c 前置：IDB schema 升级前的回滚兜底备份 -->
-      <div style="margin-top:14px; padding:12px; background:#f6f8fa; border:1px solid #d0d7de; border-radius:4px;">
-        <div style="font-size:12px; color:#444; margin-bottom:10px; line-height:1.6;">
-          <strong>📦 导出 IDB 备份 JSON</strong>：把整个本地 IndexedDB（捕获 / 评估 / 事件 / 沟通池 / 诊断日志 / 撤销快照 / FSA 状态）打包成 JSON 下载。
-          <br><span style="color:#666;">用途：v0.22.5 起 IDB schema 已升级到 v7（新增 dismissed_candidates 表，仅新增不破坏既有）；如不放心可先点这里导出当前快照，schema 升级出问题时可回滚回灌。</span>
-          <br><span style="color:#888;">普通使用不需要点；仅在 schema 重大变更前或开发调试时使用。</span>
-        </div>
-        <div class="actions" style="gap:8px;">
-          <button id="btn-export-idb-backup" class="secondary">📦 导出 IDB 备份 JSON</button>
-          <span id="idb-backup-status" class="test-result" style="margin-left:8px; font-size:12px;"></span>
-        </div>
-      </div>
+      <!-- v1.0.14：删「📦 导出 IDB 备份 JSON」div(灾备走重装 + chrome.storage.sync 平台同步) -->
     </section>
 
     </details>
@@ -472,8 +355,12 @@
   </div>
 
   <!-- v0.17.0 storage 重构：jd-templates / admin.js 依赖 BossStorageSync，必须先加载 -->
+  <!-- v1.1.22 P1-2:message-types.js 跟 ui-utils 紧邻,供 admin.js 用 BossMessageTypes 常量 -->
+  <script src="../lib/ui-utils.js"></script>
+  <script src="../lib/message-types.js"></script>
   <script src="../lib/storage-sync.js"></script>
   <script src="../lib/jd-templates.js"></script>
+  <script src="../lib/boss-positions.js"></script>
   <script src="../lib/greet-templates.js"></script>
   <script src="../lib/prompt-builder.js"></script>
   <script src="../lib/llm-client.js"></script>
